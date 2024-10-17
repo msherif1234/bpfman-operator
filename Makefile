@@ -3,7 +3,7 @@
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.5.0-rc3
+VERSION ?= 0.5.4
 
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
@@ -73,6 +73,7 @@ SHELL = /usr/bin/env bash -o pipefail
 # Image building tool (docker / podman) - docker is preferred in CI
 OCI_BIN_PATH := $(shell which docker 2>/dev/null || which podman)
 OCI_BIN ?= $(shell basename ${OCI_BIN_PATH})
+export OCI_BIN
 
 GOARCH ?= $(shell go env GOHOSTARCH)
 PLATFORM ?= $(shell go env GOHOSTOS)/$(shell go env GOHOSTARCH)
@@ -181,7 +182,7 @@ ifeq (,$(shell which opm 2>/dev/null))
 	set -e ;\
 	mkdir -p $(dir $(OPM)) ;\
 	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.23.0/$${OS}-$${ARCH}-opm ;\
+	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.45.0/$${OS}-$${ARCH}-opm ;\
 	chmod +x $(OPM) ;\
 	}
 else
@@ -285,15 +286,14 @@ test: fmt envtest ## Run Unit tests.
 
 .PHONY: test-integration
 test-integration: ## Run Integration tests.
-	go clean -testcache
 	cd config/bpfman-deployment && \
 	  $(SED) -e 's@bpfman\.image=.*@bpfman.image=$(BPFMAN_IMG)@' \
 	      -e 's@bpfman\.agent\.image=.*@bpfman.agent.image=$(BPFMAN_AGENT_IMG)@' \
 		  kustomization.yaml.env > kustomization.yaml
-	GOFLAGS="-tags=integration_tests" go test -race -v ./test/integration/...
+	GOFLAGS="-tags=integration_tests" go test -count=1 -race -v ./test/integration/...
 
 ## The physical bundle is no longer tracked in git since it should be considered
-## and treated as a release artifact, rather than something that's updated 
+## and treated as a release artifact, rather than something that's updated
 ## as part of a pull request.
 ## See https://github.com/operator-framework/operator-sdk/issues/6285.
 .PHONY: bundle
@@ -318,17 +318,39 @@ build: fmt ## Build bpfman-operator and bpfman-agent binaries.
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -mod vendor -o bin/bpfman-operator cmd/bpfman-operator/main.go
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -mod vendor -o bin/bpfman-agent cmd/bpfman-agent/main.go
 
+# These paths map the host's GOCACHE location to the container's
+# location. We want to mount the host's Go cache in the container to
+# speed up builds, particularly during development. Only podman (i.e.,
+# not Docker) permits volumes to be mapped for builds so we do this
+# conditionally.
+ifeq ($(OCI_BIN),podman)
+LOCAL_GOCACHE_PATH ?= $(shell go env GOCACHE)
+CONTAINER_GOCACHE_PATH ?= /root/.cache/go-build
+$(shell mkdir -p $(LOCAL_GOCACHE_PATH))
+endif
+
 .PHONY: build-images
-build-images: ## Build bpfman-agent and bpfman-operator images.
+build-images: build-operator-image build-agent-image ## Build bpfman-agent and bpfman-operator images.
+
+.PHONY: build-operator-image
+build-operator-image: ## Build bpfman-operator image.
+	$(if $(filter $(OCI_BIN),podman), \
+	  @echo "Adding GOCACHE volume mount $(LOCAL_GOCACHE_PATH):$(CONTAINER_GOCACHE_PATH).")
+	$(OCI_BIN) version
 	$(OCI_BIN) buildx build --load -t ${BPFMAN_OPERATOR_IMG} \
 	  --build-arg TARGETPLATFORM=linux/$(GOARCH) \
 	  --build-arg TARGETARCH=$(GOARCH) \
 	  --build-arg BUILDPLATFORM=linux/amd64 \
+	  $(if $(filter $(OCI_BIN),podman),--volume "$(LOCAL_GOCACHE_PATH):$(CONTAINER_GOCACHE_PATH):z") \
 	  -f Containerfile.bpfman-operator .
+
+.PHONY: build-agent-image
+build-agent-image: ## Build bpfman-agent image.
 	$(OCI_BIN) buildx build --load -t ${BPFMAN_AGENT_IMG} \
 	  --build-arg TARGETPLATFORM=linux/$(GOARCH) \
 	  --build-arg TARGETARCH=$(GOARCH) \
 	  --build-arg BUILDPLATFORM=linux/amd64 \
+	  $(if $(filter $(OCI_BIN),podman),--volume "$(LOCAL_GOCACHE_PATH):$(CONTAINER_GOCACHE_PATH):z") \
 	  -f Containerfile.bpfman-agent .
 
 .PHONY: push-images
@@ -339,11 +361,11 @@ push-images: ## Push bpfman-agent and bpfman-operator images.
 
 .PHONY: load-images-kind
 load-images-kind: ## Load bpfman-agent, and bpfman-operator images into the running local kind devel cluster.
-	kind load docker-image ${BPFMAN_OPERATOR_IMG} ${BPFMAN_AGENT_IMG} --name ${KIND_CLUSTER_NAME}
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} ${BPFMAN_OPERATOR_IMG} ${BPFMAN_AGENT_IMG}
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
-	docker build -f Containerfile.bundle -t $(BUNDLE_IMG) .
+	docker build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
@@ -360,6 +382,7 @@ CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 ifneq ($(origin CATALOG_BASE_IMG), undefined)
 FROM_INDEX_OPT := --from-index $(CATALOG_BASE_IMG)
 endif
+
 
 # Build a catalog image by adding bundle images to an empty catalog using the operator package manager tool, 'opm'.
 # This recipe invokes 'opm' in 'semver' bundle add mode. For more information on add modes, see:
@@ -406,7 +429,7 @@ deploy: manifests kustomize ## Deploy bpfman-operator to the K8s cluster specifi
 
 .PHONY: undeploy
 undeploy: ## Undeploy bpfman-operator from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	kubectl delete cm bpfman-config -n bpfman
+	kubectl delete --ignore-not-found=$(ignore-not-found) cm bpfman-config -n bpfman
 	sleep 5 # Wait for the operator to cleanup the daemonset
 	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
@@ -441,4 +464,4 @@ catalog-deploy: ## Deploy a catalog image.
 # Undeploy the catalog.
 .PHONY: catalog-undeploy
 catalog-undeploy: ## Undeploy a catalog image.
-	kubectl delete -f ./config/catalog/catalog.yaml
+	kubectl delete --ignore-not-found=$(ignore-not-found) -f ./config/catalog/catalog.yaml
