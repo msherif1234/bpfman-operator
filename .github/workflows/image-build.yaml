@@ -1,4 +1,4 @@
-name: bpfman-image-build
+name: operator-image-build
 
 on: # yamllint disable-line rule:truthy
   push:
@@ -7,7 +7,10 @@ on: # yamllint disable-line rule:truthy
       - v*
 
   pull_request:
-    paths: [.github/workflows/image-build.yaml]
+    paths:
+      - .github/workflows/image-build.yaml
+      - Containerfile.bpfman-agent
+      - Containerfile.bpfman-operator
 
 jobs:
   build-and-push-images:
@@ -16,7 +19,7 @@ jobs:
       packages: write
       id-token: write # needed for signing the images with GitHub OIDC Token
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -94,7 +97,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           file: ${{ matrix.image.dockerfile }}
-          build-args: ${{ matrix.image.build_args }}
+          build-args: BUILDPLATFORM=linux/amd64
           context: ${{ matrix.image.context }}
 
       - name: Sign the images with GitHub OIDC Token
@@ -111,7 +114,7 @@ jobs:
       packages: write
       id-token: write # needed for signing the images with GitHub OIDC Token
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -120,7 +123,7 @@ jobs:
             repository: bpfman
             image: bpfman-operator-bundle
             context: .
-            dockerfile: ./Containerfile.bundle
+            dockerfile: ./bundle.Dockerfile
             tags: |
               type=ref,event=branch
               type=ref,event=tag
@@ -160,7 +163,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           containerfiles: ${{ matrix.image.dockerfile }}
-          build-args: ${{ matrix.image.build_args }}
+          build-args: BUILDPLATFORM=linux/amd64
           context: ${{ matrix.image.context }}
 
       - name: Push to registry

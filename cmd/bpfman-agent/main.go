@@ -62,10 +62,12 @@ func main() {
 	var probeAddr string
 	var opts zap.Options
 	var enableHTTP2 bool
+	var pprofAddr string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8174", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8175", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", enableHTTP2, "If HTTP/2 should be enabled for the metrics and webhook servers.")
+	flag.StringVar(&pprofAddr, "profiling-bind-address", "", "The address the profiling endpoint binds to, such as ':6060'. Leave unset to disable profiling.")
 	flag.Parse()
 
 	// Get the Log level for bpfman deployment where this pod is running
@@ -109,6 +111,7 @@ func main() {
 			Port:    9443,
 			TLSOpts: []func(*tls.Config){disableHTTP2},
 		}),
+		PprofBindAddress:       pprofAddr,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         false,
 		// Specify that Secrets's should not be cached.
@@ -155,6 +158,13 @@ func main() {
 		ReconcilerCommon: common,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create tcProgram controller", "controller", "BpfProgram")
+		os.Exit(1)
+	}
+
+	if err = (&bpfmanagent.TcxProgramReconciler{
+		ReconcilerCommon: common,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create tcxProgram controller", "controller", "BpfProgram")
 		os.Exit(1)
 	}
 
