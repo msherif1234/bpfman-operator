@@ -5,12 +5,35 @@ package integration
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bpfman/bpfman-operator/apis/v1alpha1"
+	"github.com/kong/kubernetes-testing-framework/pkg/clusters"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/remotecommand"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+)
+
+const (
+	bpfmanNamespace      = "bpfman"
+	bpfmanContainer      = "bpfman"
+	bpfmanDaemonSelector = "name=bpfman-daemon"
 )
 
 func doKprobeCheck(t *testing.T, output *bytes.Buffer) bool {
@@ -40,8 +63,26 @@ func doTcCheck(t *testing.T, output *bytes.Buffer) bool {
 }
 
 func doAppTcCheck(t *testing.T, output *bytes.Buffer) bool {
-	if strings.Contains(output.String(), "TC:") && strings.Contains(output.String(), "packets received") && strings.Contains(output.String(), "bytes received") {
-		t.Log("TC BPF program is functioning")
+	str := `TC: received (\d+) packets`
+	if ok, count := doProbeCommonCheck(t, output, str); ok {
+		t.Logf("TC BPF program is functioning packets: %d", count)
+		return true
+	}
+	return false
+}
+
+func doTcxCheck(t *testing.T, output *bytes.Buffer) bool {
+	if strings.Contains(output.String(), "packets received") && strings.Contains(output.String(), "bytes received") {
+		t.Log("TCX BPF program is functioning")
+		return true
+	}
+	return false
+}
+
+func doAppTcxCheck(t *testing.T, output *bytes.Buffer) bool {
+	str := `TCX: received (\d+) packets`
+	if ok, count := doProbeCommonCheck(t, output, str); ok {
+		t.Logf("TCX BPF program is functioning packets: %d", count)
 		return true
 	}
 	return false
@@ -92,8 +133,9 @@ func doXdpCheck(t *testing.T, output *bytes.Buffer) bool {
 }
 
 func doAppXdpCheck(t *testing.T, output *bytes.Buffer) bool {
-	if strings.Contains(output.String(), "XDP:") && strings.Contains(output.String(), "packets received") && strings.Contains(output.String(), "bytes received") {
-		t.Log("XDP BPF program is functioning")
+	str := `XDP: received (\d+) packets`
+	if ok, count := doProbeCommonCheck(t, output, str); ok {
+		t.Logf("XDP BPF program is functioning packets: %d", count)
 		return true
 	}
 	return false
@@ -102,12 +144,410 @@ func doAppXdpCheck(t *testing.T, output *bytes.Buffer) bool {
 func doProbeCommonCheck(t *testing.T, output *bytes.Buffer, str string) (bool, int) {
 	want := regexp.MustCompile(str)
 	matches := want.FindAllStringSubmatch(output.String(), -1)
-	if len(matches) >= 1 && len(matches[0]) >= 2 {
-		count, err := strconv.Atoi(matches[0][1])
+	numMatches := len(matches)
+	if numMatches >= 1 && len(matches[numMatches-1]) >= 2 {
+		count, err := strconv.Atoi(matches[numMatches-1][1])
 		require.NoError(t, err)
 		if count > 0 {
 			return true, count
 		}
 	}
 	return false, 0
+}
+
+// namedClusterBpfApplicationSuccess returns a function that checks if a
+// ClusterBpfApplication with the given name has reached a successful state.
+func namedClusterBpfApplicationSuccess(t *testing.T, name string) func() bool {
+	return func() bool {
+		app, err := bpfmanClient.BpfmanV1alpha1().ClusterBpfApplications().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Logf("ClusterBpfApplication %q not yet available: %v", name, err)
+			return false
+		}
+		c := meta.FindStatusCondition(app.Status.Conditions, string(v1alpha1.BpfAppStateCondSuccess))
+		return c != nil && c.Status == metav1.ConditionTrue
+	}
+}
+
+// clusterBpfApplicationStateSuccess returns a function that checks if the expected number of
+// ClusterBpfApplications matching the label selector have reached a successful state.
+func clusterBpfApplicationStateSuccess(t *testing.T, labelSelector string, numExpected int) func() bool {
+	return func() bool {
+		// Fetch all ClusterBpfApplications matching the label selector.
+		apps, err := bpfmanClient.BpfmanV1alpha1().ClusterBpfApplications().List(ctx, metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+		require.NoError(t, err)
+
+		// Count how many applications have reached success state.
+		numMatches := 0
+		for _, app := range apps.Items {
+			c := meta.FindStatusCondition(app.Status.Conditions, string(v1alpha1.BpfAppStateCondSuccess))
+			if c != nil && c.Status == metav1.ConditionTrue {
+				numMatches++
+			}
+		}
+		// Return true if the number of successful applications matches expected count.
+		return numMatches == numExpected
+	}
+}
+
+// verifyClusterBpfApplicationPriority returns a function that verifies BPF program links are ordered
+// correctly according to their priority values on each node.
+func verifyClusterBpfApplicationPriority(t *testing.T, labelSelector string) func() bool {
+	return func() bool {
+		// Fetch all ClusterBpfApplications matching the label selector.
+		apps, err := bpfmanClient.BpfmanV1alpha1().ClusterBpfApplications().List(ctx, metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+		require.NoError(t, err)
+
+		// Fetch all ClusterBpfApplicationStates to get per-node link information.
+		appStates, err := bpfmanClient.BpfmanV1alpha1().ClusterBpfApplicationStates().List(ctx, metav1.ListOptions{})
+		require.NoError(t, err)
+
+		// Build a map of node names to their associated links from ClusterBpfApplicationStates.
+		nodeLinks := map[string][]link{}
+		for _, app := range apps.Items {
+			for _, appState := range appStates.Items {
+				for _, ownerRef := range appState.OwnerReferences {
+					// Skip if this appState is not controlled by the current app.
+					if ownerRef.Controller == nil || !*ownerRef.Controller {
+						continue
+					}
+					if ownerRef.UID != app.UID {
+						continue
+					}
+					// Initialize the slice for this node if needed.
+					if nodeLinks[appState.Status.Node] == nil {
+						nodeLinks[appState.Status.Node] = []link{}
+					}
+					// Extract and append links from this appState.
+					nodeLinks[appState.Status.Node] = append(
+						nodeLinks[appState.Status.Node],
+						getClusterBpfApplicationStateLinks(t, appState)...,
+					)
+				}
+			}
+		}
+		// Verify link ordering on each node by directly querying bpfman daemon inside the pod.
+		for node, appStateLinks := range nodeLinks {
+			bpfmanLinks := []link{}
+			// Find the bpfman daemon pod running on this node.
+			pods, err := env.Cluster().Client().CoreV1().Pods(bpfmanNamespace).List(ctx, metav1.ListOptions{
+				LabelSelector: bpfmanDaemonSelector,
+				FieldSelector: fmt.Sprintf("spec.nodeName=%s", node),
+			})
+			require.NoError(t, err)
+			require.Len(t, pods.Items, 1)
+			// Query each link from bpfman and verify that bpfman get link matches the output from
+			// ClusterBpfApplicationState.
+			for _, appStateLink := range appStateLinks {
+				cmd := []string{"./bpfman", "get", "link", fmt.Sprintf("%d", appStateLink.linkId)}
+				var bpfmanOut, bpfmanErr bytes.Buffer
+				err := podExec(ctx, t, pods.Items[0], bpfmanContainer, &bpfmanOut, &bpfmanErr, cmd)
+				require.NoError(t, err)
+				t.Logf("bpfman get link output:\n%s", bpfmanOut.String())
+				// Parse the bpfman output and verify it matches.
+				bpfmanLink := parseLink(bpfmanOut.String())
+				require.True(t, linkOutputMatchesLink(t, bpfmanLink, appStateLink))
+				bpfmanLinks = append(bpfmanLinks, bpfmanLink)
+			}
+			// Verify that links are ordered correctly by priority (match priority to expected position).
+			require.True(t, verifyLinkOrder(bpfmanLinks), "position in slice should match priority", bpfmanLinks)
+		}
+		return true
+	}
+}
+
+// link represents a BPF program link with its metadata including link ID, network interface,
+// namespace path, priority, and position in the link chain.
+type link struct {
+	linkId        uint32
+	interfaceName string
+	netnsPath     string
+	priority      int32
+	position      int32
+}
+
+// parseLink parses the output from "bpfman get link" command and converts it to a link struct.
+func parseLink(out string) link {
+	l := link{}
+	lines := bytes.Split([]byte(out), []byte("\n"))
+
+	for _, line := range lines {
+		parts := bytes.SplitN(line, []byte(":"), 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := bytes.TrimSpace(parts[0])
+		value := bytes.TrimSpace(parts[1])
+
+		switch string(key) {
+		case "Link ID":
+			fmt.Sscanf(string(value), "%d", &l.linkId)
+		case "Interface":
+			l.interfaceName = string(value)
+		case "Network Namespace":
+			if string(value) != "None" {
+				l.netnsPath = string(value)
+			}
+		case "Priority":
+			fmt.Sscanf(string(value), "%d", &l.priority)
+		case "Position":
+			fmt.Sscanf(string(value), "%d", &l.position)
+		}
+	}
+
+	return l
+}
+
+// getClusterBpfApplicationStateLinks extracts link information from a ClusterBpfApplicationState
+// for XDP, TC, and TCX program types.
+func getClusterBpfApplicationStateLinks(t *testing.T, appState v1alpha1.ClusterBpfApplicationState) []link {
+	links := []link{}
+	// Iterate through all programs in the application state.
+	for _, program := range appState.Status.Programs {
+		switch program.Type {
+		case v1alpha1.ProgTypeXDP:
+			// Extract XDP program links.
+			for _, l := range program.XDP.Links {
+				require.NotNil(t, l.LinkId)
+				links = append(links, link{
+					linkId:        *l.LinkId,
+					interfaceName: l.InterfaceName,
+					netnsPath:     l.NetnsPath,
+					priority:      l.Priority,
+				})
+			}
+		case v1alpha1.ProgTypeTC:
+			// Extract TC program links.
+			for _, l := range program.TC.Links {
+				require.NotNil(t, l.LinkId)
+				links = append(links, link{
+					linkId:        *l.LinkId,
+					interfaceName: l.InterfaceName,
+					netnsPath:     l.NetnsPath,
+					priority:      l.Priority,
+				})
+			}
+		case v1alpha1.ProgTypeTCX:
+			// Extract TCX program links.
+			for _, l := range program.TCX.Links {
+				require.NotNil(t, l.LinkId)
+				links = append(links, link{
+					linkId:        *l.LinkId,
+					interfaceName: l.InterfaceName,
+					netnsPath:     l.NetnsPath,
+					priority:      l.Priority,
+				})
+			}
+		}
+	}
+	return links
+}
+
+// linkOutputMatchesLink compares a link parsed from bpfman output with an expected link state.
+func linkOutputMatchesLink(t *testing.T, linkFromOutput, l link) bool {
+	t.Logf("Comparing output and desired link state; got:\n%+v\nwanted:\n%+v", linkFromOutput, l)
+	return l.linkId == linkFromOutput.linkId &&
+		l.interfaceName == linkFromOutput.interfaceName &&
+		l.netnsPath == linkFromOutput.netnsPath &&
+		l.priority == linkFromOutput.priority
+}
+
+// verifyLinkOrder verifies that links' positions match their priorities.
+// Side-effect: this orders `links` in place by position.
+func verifyLinkOrder(links []link) bool {
+	// Order elements by position.
+	slices.SortFunc(links, func(a, b link) int {
+		if a.position < b.position {
+			return -1
+		}
+		if a.position > b.position {
+			return 1
+		}
+		return 0
+	})
+
+	// Now, make sure that the priority of each element is >= the preceding element.
+	oldI := 0
+	for i := 1; i < len(links); i++ {
+		if links[i].priority < links[oldI].priority {
+			return false
+		}
+		oldI = i
+	}
+	return true
+}
+
+// podExec runs a command in a pod and captures stdout/stderr.
+func podExec(ctx context.Context, t *testing.T, pod corev1.Pod, container string, stdout, stderr *bytes.Buffer, cmd []string) error {
+	t.Helper()
+	kubeConfig, err := config.GetConfig()
+	if err != nil {
+		t.Fatalf("failed to get kube config: %v", err)
+	}
+
+	cl, err := kubernetes.NewForConfig(kubeConfig)
+	if err != nil {
+		t.Fatalf("failed to create kube client: %v", err)
+	}
+
+	req := cl.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(pod.Name).
+		Namespace(pod.Namespace).
+		SubResource("exec")
+
+	execOptions := &corev1.PodExecOptions{
+		Command: cmd,
+		Stdin:   false,
+		Stdout:  true,
+		Stderr:  true,
+		TTY:     false,
+	}
+	if container != "" {
+		execOptions.Container = container
+	}
+
+	req.VersionedParams(execOptions, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(kubeConfig, "POST", req.URL())
+	if err != nil {
+		return err
+	}
+
+	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+}
+
+// deployWorkload applies an example kustomization and, on an existing
+// (OpenShift) cluster, reconciles the SELinux type the workload requests with
+// the one the security-profiles-operator actually installed (see
+// alignWorkloadSelinuxType). On kind it is a plain kustomize apply.
+func deployWorkload(ctx context.Context, cluster clusters.Cluster, namespace, kustomizeURL string) error {
+	if err := clusters.KustomizeDeployForCluster(ctx, cluster, workloadKustomize(kustomizeURL)); err != nil {
+		return err
+	}
+	return alignWorkloadSelinuxType(ctx, cluster, namespace)
+}
+
+// deleteWorkload removes an example kustomization. It passes --ignore-not-found
+// so teardown is idempotent: the selinux overlays share one cluster-scoped
+// SelinuxProfile (bpfman-secure), and go-target is deployed by more than one
+// test, so a resource may already have been removed by an earlier cleanup.
+func deleteWorkload(ctx context.Context, cluster clusters.Cluster, kustomizeURL string) error {
+	return clusters.KustomizeDeleteForCluster(ctx, cluster, workloadKustomize(kustomizeURL), "--ignore-not-found")
+}
+
+// workloadKustomize selects the example kustomize overlay for the current
+// cluster. On an existing (OpenShift) cluster it swaps the default overlay for
+// the selinux one, which labels the namespace privileged, binds the workload
+// serviceaccount to the bpfman-restricted SCC, and installs a SelinuxProfile
+// granting the userspace consumer bpf map access -- the combination the
+// example workloads need under enforcing SELinux. That overlay relies on the
+// security-profiles-operator being installed (see the SelinuxProfile check in
+// TestMain). On kind the default overlay is used unchanged.
+func workloadKustomize(defaultURL string) string {
+	if !useExistingCluster {
+		return defaultURL
+	}
+	return strings.Replace(defaultURL, "/config/default/", "/config/selinux/", 1)
+}
+
+// selinuxProfileGVR is the security-profiles-operator SelinuxProfile resource.
+var selinuxProfileGVR = schema.GroupVersionResource{
+	Group:    "security-profiles-operator.x-k8s.io",
+	Version:  "v1alpha2",
+	Resource: "selinuxprofiles",
+}
+
+// alignWorkloadSelinuxType points each workload daemonset at the SELinux type
+// the security-profiles-operator actually installed. The selinux example
+// overlay hardcodes the older <profile>_<namespace>.process naming, but newer
+// SPO names the type <profile>.process and records the real value in the
+// SelinuxProfile's status.usage. When the two disagree the container runtime
+// rejects the unknown label ("write to /proc/self/attr/keycreate: Invalid
+// argument") and no pods start, so we rewrite the daemonsets' seLinuxOptions
+// type to the installed one. It is a no-op on kind and whenever the requested
+// type already matches.
+func alignWorkloadSelinuxType(ctx context.Context, cluster clusters.Cluster, namespace string) error {
+	if !useExistingCluster {
+		return nil
+	}
+
+	// Find the daemonset containers whose SELinux type the overlay pinned.
+	// Some workloads (e.g. go-target) ship no SelinuxProfile and set no
+	// type, so there is nothing to reconcile and no profile to wait for.
+	daemonsets, err := cluster.Client().AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing daemonsets in %s: %w", namespace, err)
+	}
+	type target struct{ daemonset, container, current string }
+	var targets []target
+	for i := range daemonsets.Items {
+		ds := &daemonsets.Items[i]
+		for _, c := range ds.Spec.Template.Spec.Containers {
+			if sc := c.SecurityContext; sc != nil && sc.SELinuxOptions != nil && sc.SELinuxOptions.Type != "" {
+				targets = append(targets, target{ds.Name, c.Name, sc.SELinuxOptions.Type})
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	dyn, err := dynamic.NewForConfig(cluster.Config())
+	if err != nil {
+		return fmt.Errorf("building dynamic client: %w", err)
+	}
+
+	for _, t := range targets {
+		// The overlay pins the type to <profile>_<namespace>.process. If it
+		// is not in that form it is already aligned (or doesn't reference a
+		// profile), so leave it.
+		suffix := "_" + namespace + ".process"
+		if !strings.HasSuffix(t.current, suffix) {
+			continue
+		}
+		profileName := strings.TrimSuffix(t.current, suffix)
+
+		// SelinuxProfile is cluster-scoped in current SPO; wait for it to
+		// report the type it actually installed, which appears soon after
+		// the overlay creates it and before it reaches the Installed state.
+		var usage string
+		for i := 0; i < 24 && usage == ""; i++ {
+			profiles, err := dyn.Resource(selinuxProfileGVR).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("listing selinuxprofiles: %w", err)
+			}
+			for _, p := range profiles.Items {
+				if p.GetName() == profileName {
+					usage, _, _ = unstructured.NestedString(p.Object, "status", "usage")
+					break
+				}
+			}
+			if usage == "" {
+				time.Sleep(5 * time.Second)
+			}
+		}
+		if usage == "" {
+			return fmt.Errorf("SelinuxProfile %s reported no usage type", profileName)
+		}
+		if usage == t.current {
+			continue
+		}
+
+		patch := fmt.Sprintf(
+			`{"spec":{"template":{"spec":{"containers":[{"name":%q,"securityContext":{"seLinuxOptions":{"type":%q}}}]}}}}`,
+			t.container, usage)
+		if _, err := cluster.Client().AppsV1().DaemonSets(namespace).Patch(ctx, t.daemonset, types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+			return fmt.Errorf("aligning SELinux type on daemonset %s/%s: %w", namespace, t.daemonset, err)
+		}
+	}
+
+	return nil
 }

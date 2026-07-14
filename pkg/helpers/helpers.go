@@ -1,5 +1,5 @@
 /*
-Copyright 2023.
+Copyright 2023 The bpfman Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,15 +17,12 @@ limitations under the License.
 package helpers
 
 import (
-	"context"
 	"fmt"
-	"time"
+	"os"
 
 	bpfmaniov1alpha1 "github.com/bpfman/bpfman-operator/apis/v1alpha1"
 	bpfmanclientset "github.com/bpfman/bpfman-operator/pkg/client/clientset"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -105,9 +102,10 @@ func (t TcProgramDirection) String() string {
 
 var log = ctrl.Log.WithName("bpfman-helpers")
 
-// getk8sConfig gets a kubernetes config automatically detecting if it should
-// be the in or out of cluster config. If this step fails panic.
-func getk8sConfigOrDie() *rest.Config {
+// GetK8sConfigOrDie gets a kubernetes config automatically detecting if it should
+// be the in or out of cluster config. When running in-cluster, KUBECONFIG
+// env var takes precedence over the in-cluster config. If this step fails panic.
+func GetK8sConfigOrDie() *rest.Config {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		kubeConfig :=
@@ -119,7 +117,16 @@ func getk8sConfigOrDie() *rest.Config {
 
 		log.Info("Program running from outside of the cluster, picking config from --kubeconfig flag")
 	} else {
-		log.Info("Program running inside the cluster, picking the in-cluster configuration")
+		kubeConfig := os.Getenv("KUBECONFIG")
+		if kubeConfig != "" {
+			config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+			if err != nil {
+				panic(err)
+			}
+			log.Info("Program running inside the cluster, picking config from KUBECONFIG env var")
+		} else {
+			log.Info("Program running inside the cluster, picking the in-cluster configuration")
+		}
 	}
 
 	return config
@@ -128,159 +135,13 @@ func getk8sConfigOrDie() *rest.Config {
 // GetClientOrDie gets the bpfman Kubernetes Client dynamically switching between in cluster and out of
 // cluster config setup.
 func GetClientOrDie() *bpfmanclientset.Clientset {
-	return bpfmanclientset.NewForConfigOrDie(getk8sConfigOrDie())
-}
-
-// Returns true if loaded.  False if not.  Also returns the condition type.
-func isProgLoaded(conditions *[]metav1.Condition) (bool, string) {
-	// Get most recent condition
-	conLen := len(*conditions)
-
-	if conLen <= 0 {
-		return false, "None"
-	}
-
-	condition := (*conditions)[0]
-
-	if condition.Type != string(bpfmaniov1alpha1.ProgramReconcileSuccess) {
-		return false, condition.Type
-	}
-
-	return true, condition.Type
-}
-
-func isKprobebpfmanProgLoaded(c *bpfmanclientset.Clientset, progConfName string) wait.ConditionWithContextFunc {
-
-	return func(ctx context.Context) (bool, error) {
-		log.Info(".") // progress bar!
-		bpfProgConfig, err := c.BpfmanV1alpha1().KprobePrograms().Get(ctx, progConfName, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		progLoaded, condType := isProgLoaded(&bpfProgConfig.Status.Conditions)
-
-		if !progLoaded {
-			log.Info("kprobeProgram: %s not ready with condition: %s, waiting until timeout", progConfName, condType)
-			return false, nil
-		}
-
-		return true, nil
-	}
-}
-
-func isFentrybpfmanProgLoaded(c *bpfmanclientset.Clientset, progConfName string) wait.ConditionWithContextFunc {
-
-	return func(ctx context.Context) (bool, error) {
-		log.Info(".") // progress bar!
-		bpfProgConfig, err := c.BpfmanV1alpha1().FentryPrograms().Get(ctx, progConfName, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		progLoaded, condType := isProgLoaded(&bpfProgConfig.Status.Conditions)
-
-		if !progLoaded {
-			log.Info("fentryProgram: %s not ready with condition: %s, waiting until timeout", progConfName, condType)
-			return false, nil
-		}
-
-		return true, nil
-	}
-}
-
-func isTcbpfmanProgLoaded(c *bpfmanclientset.Clientset, progConfName string) wait.ConditionWithContextFunc {
-
-	return func(ctx context.Context) (bool, error) {
-		log.Info(".") // progress bar!
-		bpfProgConfig, err := c.BpfmanV1alpha1().TcPrograms().Get(ctx, progConfName, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		progLoaded, condType := isProgLoaded(&bpfProgConfig.Status.Conditions)
-
-		if !progLoaded {
-			log.Info("tcProgram: %s not ready with condition: %s, waiting until timeout", progConfName, condType)
-			return false, nil
-		}
-
-		return true, nil
-	}
-}
-
-func isTracepointbpfmanProgLoaded(c *bpfmanclientset.Clientset, progConfName string) wait.ConditionWithContextFunc {
-
-	return func(ctx context.Context) (bool, error) {
-		log.Info(".") // progress bar!
-		bpfProgConfig, err := c.BpfmanV1alpha1().TracepointPrograms().Get(ctx, progConfName, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		progLoaded, condType := isProgLoaded(&bpfProgConfig.Status.Conditions)
-
-		if !progLoaded {
-			log.Info("tracepointProgram: %s not ready with condition: %s, waiting until timeout", progConfName, condType)
-			return false, nil
-		}
-
-		return true, nil
-	}
-}
-
-func isXdpbpfmanProgLoaded(c *bpfmanclientset.Clientset, progConfName string) wait.ConditionWithContextFunc {
-
-	return func(ctx context.Context) (bool, error) {
-		log.Info(".") // progress bar!
-		bpfProgConfig, err := c.BpfmanV1alpha1().XdpPrograms().Get(ctx, progConfName, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		progLoaded, condType := isProgLoaded(&bpfProgConfig.Status.Conditions)
-
-		if !progLoaded {
-			log.Info("xdpProgram: %s not ready with condition: %s, waiting until timeout", progConfName, condType)
-			return false, nil
-		}
-
-		return true, nil
-	}
-}
-
-// WaitForBpfProgConfLoad ensures the Program object is loaded and deployed successfully, specifically
-// it checks the config objects' conditions to look for the `Loaded` state.
-func WaitForBpfProgConfLoad(c *bpfmanclientset.Clientset, progName string, timeout time.Duration, progType ProgramType) error {
-	ctx := context.Background()
-	switch progType {
-	case Kprobe:
-		return wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, isKprobebpfmanProgLoaded(c, progName))
-	case Tc:
-		return wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, isTcbpfmanProgLoaded(c, progName))
-	case Xdp:
-		return wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, isXdpbpfmanProgLoaded(c, progName))
-	case Tracepoint:
-		return wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, isTracepointbpfmanProgLoaded(c, progName))
-	case Tracing:
-		return wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, isFentrybpfmanProgLoaded(c, progName))
-	// TODO: case Uprobe: not covered.  Since Uprobe has the same ProgramType as
-	// Kprobe, we need a different way to distinguish them.  Options include
-	// creating an internal ProgramType for Uprobe or using a different
-	// identifier such as the string representation of the program type.
-	// TODO: case Fexit: not covered.  Since Fexit has the same ProgramType as
-	// Fentry, we need a different way to distinguish them.  Options include
-	// creating an internal ProgramType for Fexit or using a different
-	// identifier such as the string representation of the program type.
-	default:
-		return fmt.Errorf("unknown bpf program type: %s", progType)
-	}
+	return bpfmanclientset.NewForConfigOrDie(GetK8sConfigOrDie())
 }
 
 // IsBpfmanDeployed is used to check for the existence of bpfman in a Kubernetes cluster. Specifically it checks for
 // the existence of the bpfman.io CRD api group within the apiserver. If getting the k8s config fails this will panic.
 func IsBpfmanDeployed() bool {
-	config := getk8sConfigOrDie()
+	config := GetK8sConfigOrDie()
 
 	client, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
@@ -303,26 +164,45 @@ func IsBpfmanDeployed() bool {
 	return false
 }
 
-func IsBpfProgramConditionFailure(conditions *[]metav1.Condition) bool {
-	if conditions == nil || *conditions == nil || len(*conditions) == 0 {
+func IsBpfAppStateConditionFailure(conditions []metav1.Condition) bool {
+	numConditions := len(conditions)
+
+	if numConditions == 0 {
 		return true
 	}
-
-	numConditions := len(*conditions)
 
 	if numConditions > 1 {
 		// We should only ever have one condition so log a message, but
 		// still look at (*conditions)[0].
-		log.Info("more than one BpfProgramCondition", "numConditions", numConditions)
+		log.Info("more than one condition found", "numConditions", numConditions)
 	}
 
-	if (*conditions)[0].Type == string(bpfmaniov1alpha1.BpfProgCondNotLoaded) ||
-		(*conditions)[0].Type == string(bpfmaniov1alpha1.BpfProgCondNotUnloaded) ||
-		(*conditions)[0].Type == string(bpfmaniov1alpha1.BpfProgCondMapOwnerNotFound) ||
-		(*conditions)[0].Type == string(bpfmaniov1alpha1.BpfProgCondMapOwnerNotLoaded) ||
-		(*conditions)[0].Type == string(bpfmaniov1alpha1.BpfProgCondBytecodeSelectorError) {
+	return conditions[0].Type == string(bpfmaniov1alpha1.BpfAppStateCondError) ||
+		conditions[0].Type == string(bpfmaniov1alpha1.BpfAppStateCondProgramListChangedError) ||
+		conditions[0].Type == string(bpfmaniov1alpha1.BpfAppStateCondUnloadError)
+}
+
+func IsBpfAppStateConditionPending(conditions []metav1.Condition) bool {
+	numConditions := len(conditions)
+
+	if numConditions == 0 {
 		return true
 	}
 
-	return false
+	if numConditions > 1 {
+		// We should only ever have one condition so log a message, but
+		// still look at conditions[0].
+		log.Info("more than one condition found", "numConditions", numConditions)
+	}
+
+	return conditions[0].Type == string(bpfmaniov1alpha1.BpfAppCondPending)
+}
+
+// GetPriority reads a priority value. If priority is nil, return
+// DefaultAttachPriority. Otherwise, return the value behind the pointer.
+func GetPriority(priority *int32) int32 {
+	if priority == nil {
+		return bpfmaniov1alpha1.DefaultAttachPriority
+	}
+	return *priority
 }

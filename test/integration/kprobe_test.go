@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kong/kubernetes-testing-framework/pkg/clusters"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,15 +19,19 @@ const (
 	kprobeGoCounterKustomize       = "https://github.com/bpfman/bpfman/examples/config/default/go-kprobe-counter/?timeout=120&ref=main"
 	kprobeGoCounterUserspaceNs     = "go-kprobe-counter"
 	kprobeGoCounterUserspaceDsName = "go-kprobe-counter-ds"
+	kprobeGoCounterBytecodeName    = "go-kprobe-counter-example"
 )
 
 func TestKprobeGoCounter(t *testing.T) {
 	t.Log("deploying kprobe counter program")
-	require.NoError(t, clusters.KustomizeDeployForCluster(ctx, env.Cluster(), kprobeGoCounterKustomize))
+	require.NoError(t, deployWorkload(ctx, env.Cluster(), kprobeGoCounterUserspaceNs, kprobeGoCounterKustomize))
 	addCleanup(func(context.Context) error {
 		cleanupLog("cleaning up kprobe counter program")
-		return clusters.KustomizeDeleteForCluster(ctx, env.Cluster(), kprobeGoCounterKustomize)
+		return deleteWorkload(ctx, env.Cluster(), kprobeGoCounterKustomize)
 	})
+
+	t.Log("waiting for kprobe counter BPF program to be loaded")
+	require.Eventually(t, namedClusterBpfApplicationSuccess(t, kprobeGoCounterBytecodeName), 2*time.Minute, time.Second)
 
 	t.Log("waiting for go kprobe counter userspace daemon to be available")
 	require.Eventually(t, func() bool {

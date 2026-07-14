@@ -1,5 +1,5 @@
 /*
-Copyright 2023 The bpfman Authors.
+Copyright 2025 The bpfman Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,22 +26,14 @@ import (
 type Interface interface {
 	// BpfApplications returns a BpfApplicationInformer.
 	BpfApplications() BpfApplicationInformer
-	// BpfPrograms returns a BpfProgramInformer.
-	BpfPrograms() BpfProgramInformer
-	// FentryPrograms returns a FentryProgramInformer.
-	FentryPrograms() FentryProgramInformer
-	// FexitPrograms returns a FexitProgramInformer.
-	FexitPrograms() FexitProgramInformer
-	// KprobePrograms returns a KprobeProgramInformer.
-	KprobePrograms() KprobeProgramInformer
-	// TcPrograms returns a TcProgramInformer.
-	TcPrograms() TcProgramInformer
-	// TracepointPrograms returns a TracepointProgramInformer.
-	TracepointPrograms() TracepointProgramInformer
-	// UprobePrograms returns a UprobeProgramInformer.
-	UprobePrograms() UprobeProgramInformer
-	// XdpPrograms returns a XdpProgramInformer.
-	XdpPrograms() XdpProgramInformer
+	// BpfApplicationStates returns a BpfApplicationStateInformer.
+	BpfApplicationStates() BpfApplicationStateInformer
+	// ClusterBpfApplications returns a ClusterBpfApplicationInformer.
+	ClusterBpfApplications() ClusterBpfApplicationInformer
+	// ClusterBpfApplicationStates returns a ClusterBpfApplicationStateInformer.
+	ClusterBpfApplicationStates() ClusterBpfApplicationStateInformer
+	// Configs returns a ConfigInformer.
+	Configs() ConfigInformer
 }
 
 type version struct {
@@ -57,45 +49,25 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 
 // BpfApplications returns a BpfApplicationInformer.
 func (v *version) BpfApplications() BpfApplicationInformer {
-	return &bpfApplicationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+	return &bpfApplicationInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// BpfPrograms returns a BpfProgramInformer.
-func (v *version) BpfPrograms() BpfProgramInformer {
-	return &bpfProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+// BpfApplicationStates returns a BpfApplicationStateInformer.
+func (v *version) BpfApplicationStates() BpfApplicationStateInformer {
+	return &bpfApplicationStateInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// FentryPrograms returns a FentryProgramInformer.
-func (v *version) FentryPrograms() FentryProgramInformer {
-	return &fentryProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+// ClusterBpfApplications returns a ClusterBpfApplicationInformer.
+func (v *version) ClusterBpfApplications() ClusterBpfApplicationInformer {
+	return &clusterBpfApplicationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
-// FexitPrograms returns a FexitProgramInformer.
-func (v *version) FexitPrograms() FexitProgramInformer {
-	return &fexitProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+// ClusterBpfApplicationStates returns a ClusterBpfApplicationStateInformer.
+func (v *version) ClusterBpfApplicationStates() ClusterBpfApplicationStateInformer {
+	return &clusterBpfApplicationStateInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
-// KprobePrograms returns a KprobeProgramInformer.
-func (v *version) KprobePrograms() KprobeProgramInformer {
-	return &kprobeProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// TcPrograms returns a TcProgramInformer.
-func (v *version) TcPrograms() TcProgramInformer {
-	return &tcProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// TracepointPrograms returns a TracepointProgramInformer.
-func (v *version) TracepointPrograms() TracepointProgramInformer {
-	return &tracepointProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// UprobePrograms returns a UprobeProgramInformer.
-func (v *version) UprobePrograms() UprobeProgramInformer {
-	return &uprobeProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// XdpPrograms returns a XdpProgramInformer.
-func (v *version) XdpPrograms() XdpProgramInformer {
-	return &xdpProgramInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+// Configs returns a ConfigInformer.
+func (v *version) Configs() ConfigInformer {
+	return &configInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

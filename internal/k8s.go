@@ -17,34 +17,14 @@ limitations under the License.
 package internal
 
 import (
-	"reflect"
-
+	"github.com/go-logr/logr"
+	"k8s.io/client-go/discovery"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-
-	bpfmaniov1alpha1 "github.com/bpfman/bpfman-operator/apis/v1alpha1"
 )
 
-// Only reconcile if a bpfprogram has been created for the controller's program type.
-func BpfProgramTypePredicate(kind string) predicate.Funcs {
-	return predicate.Funcs{
-		GenericFunc: func(e event.GenericEvent) bool {
-			return e.Object.(*bpfmaniov1alpha1.BpfProgram).Spec.Type == kind
-		},
-		CreateFunc: func(e event.CreateEvent) bool {
-			return e.Object.(*bpfmaniov1alpha1.BpfProgram).Spec.Type == kind
-		},
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return e.ObjectNew.(*bpfmaniov1alpha1.BpfProgram).Spec.Type == kind
-		},
-		DeleteFunc: func(e event.DeleteEvent) bool {
-			return e.Object.(*bpfmaniov1alpha1.BpfProgram).Spec.Type == kind
-		},
-	}
-}
-
-// Only reconcile if a bpfprogram has been created for a controller's node.
-func BpfProgramNodePredicate(nodeName string) predicate.Funcs {
+// Only reconcile if a program has been created for a controller's node.
+func BpfNodePredicate(nodeName string) predicate.Funcs {
 	return predicate.Funcs{
 		GenericFunc: func(e event.GenericEvent) bool {
 			return e.Object.GetLabels()[K8sHostLabel] == nodeName
@@ -83,21 +63,45 @@ func DiscoveredBpfProgramPredicate() predicate.Funcs {
 	}
 }
 
-func StatusChangedPredicate() predicate.Funcs {
-	return predicate.Funcs{
-		GenericFunc: func(e event.GenericEvent) bool {
-			return false
-		},
-		CreateFunc: func(e event.CreateEvent) bool {
-			return false
-		},
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldObject := e.ObjectOld.(*bpfmaniov1alpha1.BpfProgram)
-			newObject := e.ObjectNew.(*bpfmaniov1alpha1.BpfProgram)
-			return !reflect.DeepEqual(oldObject.Status, newObject.Status)
-		},
-		DeleteFunc: func(e event.DeleteEvent) bool {
-			return false
-		},
+// Returns true if the current platform is Openshift.
+func IsOpenShift(client discovery.DiscoveryInterface, setupLog logr.Logger) (bool, error) {
+	k8sVersion, err := client.ServerVersion()
+	if err != nil {
+		setupLog.Info("issue occurred while fetching ServerVersion")
+		return false, err
 	}
+
+	setupLog.Info("detected platform version", "PlatformVersion", k8sVersion)
+	apiList, err := client.ServerGroups()
+	if err != nil {
+		setupLog.Info("issue occurred while fetching ServerGroups")
+		return false, err
+	}
+
+	for _, v := range apiList.Groups {
+		if v.Name == "route.openshift.io" {
+			setupLog.Info("route.openshift.io found in apis, platform is OpenShift")
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// HasMonitoringAPI returns true if the monitoring.coreos.com API group
+// is available on the cluster, indicating the Prometheus Operator (or
+// compatible) is installed.
+func HasMonitoringAPI(client discovery.DiscoveryInterface, setupLog logr.Logger) (bool, error) {
+	apiList, err := client.ServerGroups()
+	if err != nil {
+		setupLog.Info("issue occurred while fetching ServerGroups")
+		return false, err
+	}
+
+	for _, v := range apiList.Groups {
+		if v.Name == "monitoring.coreos.com" {
+			setupLog.Info("monitoring.coreos.com found in apis, Prometheus Operator available")
+			return true, nil
+		}
+	}
+	return false, nil
 }

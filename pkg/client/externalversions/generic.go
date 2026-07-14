@@ -1,5 +1,5 @@
 /*
-Copyright 2023 The bpfman Authors.
+Copyright 2025 The bpfman Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ limitations under the License.
 package externalversions
 
 import (
-	"fmt"
+	fmt "fmt"
 
 	v1alpha1 "github.com/bpfman/bpfman-operator/apis/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -55,22 +55,14 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=bpfman.io, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("bpfapplications"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().BpfApplications().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("bpfprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().BpfPrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("fentryprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().FentryPrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("fexitprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().FexitPrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("kprobeprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().KprobePrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("tcprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().TcPrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("tracepointprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().TracepointPrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("uprobeprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().UprobePrograms().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("xdpprograms"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().XdpPrograms().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("bpfapplicationstates"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().BpfApplicationStates().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("clusterbpfapplications"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().ClusterBpfApplications().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("clusterbpfapplicationstates"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().ClusterBpfApplicationStates().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("configs"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bpfman().V1alpha1().Configs().Informer()}, nil
 
 	}
 

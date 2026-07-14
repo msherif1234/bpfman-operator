@@ -19,47 +19,56 @@ package internal
 import "fmt"
 
 const (
-	XdpProgramInterface         = "bpfman.io.xdpprogramcontroller/interface"
-	TcProgramInterface          = "bpfman.io.tcprogramcontroller/interface"
-	TracepointProgramTracepoint = "bpfman.io.tracepointprogramcontroller/tracepoint"
-	KprobeProgramFunction       = "bpfman.io.kprobeprogramcontroller/function"
-	UprobeProgramTarget         = "bpfman.io.uprobeprogramcontroller/target"
-	UprobeContainerPid          = "bpfman.io.uprobeprogramcontroller/containerpid"
-	UprobeNoContainersOnNode    = "bpfman.io.uprobeprogramcontroller/nocontainersonnode"
-	FentryProgramFunction       = "bpfman.io.fentryprogramcontroller/function"
-	FexitProgramFunction        = "bpfman.io.fexitprogramcontroller/function"
-	K8sHostLabel                = "kubernetes.io/hostname"
-	DiscoveredLabel             = "bpfman.io/discoveredProgram"
-	IdAnnotation                = "bpfman.io/ProgramId"
-	UuidMetadataKey             = "bpfman.io/uuid"
-	ProgramNameKey              = "bpfman.io/ProgramName"
-	BpfmanNs                    = "bpfman"
-	BpfmanOperatorName          = "bpfman-operator"
-	BpfmanDsName                = "bpfman-daemon"
-	BpfmanConfigName            = "bpfman-config"
-	BpfmanCsiDriverName         = "csi.bpfman.io"
-	BpfmanRestrictedSccName     = "bpfman-restricted"
-	BpfmanContainerName         = "bpfman"
-	BpfmanAgentContainerName    = "bpfman-agent"
-	BpfmanDaemonManifestPath    = "./config/bpfman-deployment/daemonset.yaml"
-	BpfmanCsiDriverPath         = "./config/bpfman-deployment/csidriverinfo.yaml"
-	BpfmanRestrictedSCCPath     = "./config/openshift/restricted-scc.yaml"
-	BpfmanMapFs                 = "/run/bpfman/fs/maps"
-	DefaultType                 = "tcp"
-	DefaultPath                 = "/run/bpfman-sock/bpfman.sock"
-	DefaultPort                 = 50051
-	DefaultEnabled              = true
-	// BpfProgramOwner is the name of the object that owns the BpfProgram
-	// object. In the case of a *Program, it will be the name of the *Program
-	// object. In the case of a BpfApplication, it will be the name of the
-	// BpfApplication object.
-	BpfProgramOwner = "bpfman.io/ownedByProgram"
-	// AppProgramId is an identifier that is used to identify individual
-	// programs that are part of a given BpfApplication object.  *Programs have
-	// an AppProgramId of "".
-	AppProgramId = "bpfman.io/appProgramId"
-	// BpfProgramAttachPoint is the attach point for a given BpfProgram.
-	BpfProgramAttachPoint = "bpfman.io/bpfProgramAttachPoint"
+	K8sHostLabel                              = "kubernetes.io/hostname"
+	DiscoveredLabel                           = "bpfman.io/discoveredProgram"
+	UuidMetadataKey                           = "bpfman.io/uuid"
+	ProgramNameKey                            = "bpfman.io/ProgramName"
+	BpfmanNamespace                           = "bpfman"
+	BpfmanOperatorName                        = "bpfman-operator"
+	BpfmanDsName                              = "bpfman-daemon"
+	BpfmanMetricsProxyDsName                  = "bpfman-metrics-proxy"
+	BpfmanConfigName                          = "bpfman-config"
+	BpfmanCmName                              = "bpfman-config"
+	BpfmanCsiDriverName                       = "csi.bpfman.io"
+	BpfmanRestrictedSccName                   = "bpfman-restricted"
+	BpfmanAgentServiceMonitorName             = "bpfman-agent-metrics-monitor"
+	BpfmanControllerServiceMonitorName        = "bpfman-controller-manager-metrics-monitor"
+	BpfmanAgentMetricsServiceName             = "bpfman-agent-metrics-service"
+	BpfmanControllerMetricsServiceName        = "bpfman-controller-manager-metrics-service"
+	BpfmanContainerName                       = "bpfman"
+	BpfmanAgentContainerName                  = "bpfman-agent"
+	BpfmanInitContainerName                   = "mount-bpffs"
+	BpfmanCsiDriverRegistrarName              = "node-driver-registrar"
+	BpfmanMetricsProxyContainer               = "metrics-proxy"
+	BpfmanPrivilegedSccClusterRoleBindingName = "bpfman-privileged-scc"
+	BpfmanUserClusterRoleName                 = "bpfman-user"
+	BpfmanPrometheusClusterRoleBindingName    = "bpfman-prometheus-metrics-reader"
+	BpfmanPrometheusRoleName                  = "bpfman-prometheus-k8s"
+	BpfmanPrometheusRoleBindingName           = "bpfman-prometheus-k8s"
+	BpfmanDaemonManifestPath                  = "./config/bpfman-deployment/daemonset.yaml"
+	BpfmanMetricsProxyPath                    = "./config/bpfman-deployment/metrics-proxy-daemonset.yaml"
+	BpfmanCsiDriverPath                       = "./config/bpfman-deployment/csidriverinfo.yaml"
+	DefaultType                               = "tcp"
+	DefaultPath                               = "/run/bpfman-sock/bpfman.sock"
+	DefaultPort                               = 50051
+	DefaultEnabled                            = true
+	DefaultConfigNamespace                    = "bpfman"
+	DefaultLogLevel                           = "info"
+	DefaultHealthProbePort                    = 8175
+	DefaultConfiguration                      = `[database]
+max_retries = 30
+millisec_delay = 10000
+[signing]
+allow_unsigned = true
+verify_enabled = true
+`
+	BpfAppStateOwner              = "bpfman.io/ownedByProgram"
+	NetNsPath                     = "/run/netns"
+	BpfmanTOML                    = "bpfman.toml"
+	BpfmanLogLevel                = "bpfman.log.level"
+	BpfmanAgentLogLevel           = "bpfman.agent.log.level"
+	BpfmanAgentHealthProbeAddress = "bpfman.agent.healthprobeaddr"
+	APIPrefix                     = "bpfman.io"
 )
 
 // -----------------------------------------------------------------------------
@@ -70,29 +79,13 @@ const (
 	// BpfmanOperatorFinalizer is the finalizer that holds a *Program from
 	// deletion until cleanup can be performed.
 	BpfmanOperatorFinalizer = "bpfman.io.operator/finalizer"
-	// XdpProgramControllerFinalizer is the finalizer that holds an Xdp BpfProgram
-	// object from deletion until cleanup can be performed.
-	XdpProgramControllerFinalizer = "bpfman.io.xdpprogramcontroller/finalizer"
-	// TcProgramControllerFinalizer is the finalizer that holds an Tc BpfProgram
-	// object from deletion until cleanup can be performed.
-	TcProgramControllerFinalizer = "bpfman.io.tcprogramcontroller/finalizer"
-	// TracepointProgramControllerFinalizer is the finalizer that holds an Tracepoint
-	// BpfProgram object from deletion until cleanup can be performed.
-	TracepointProgramControllerFinalizer = "bpfman.io.tracepointprogramcontroller/finalizer"
-	// KprobeProgramControllerFinalizer is the finalizer that holds a Kprobe
-	// BpfProgram object from deletion until cleanup can be performed.
-	KprobeProgramControllerFinalizer = "bpfman.io.kprobeprogramcontroller/finalizer"
-	// UprobeProgramControllerFinalizer is the finalizer that holds a Uprobe
-	// BpfProgram object from deletion until cleanup can be performed.
-	UprobeProgramControllerFinalizer = "bpfman.io.uprobeprogramcontroller/finalizer"
-	// FentryProgramControllerFinalizer is the finalizer that holds a Fentry
-	// BpfProgram object from deletion until cleanup can be performed.
-	FentryProgramControllerFinalizer = "bpfman.io.fentryprogramcontroller/finalizer"
-	// FexitProgramControllerFinalizer is the finalizer that holds a Fexit
-	// BpfProgram object from deletion until cleanup can be performed.
-	FexitProgramControllerFinalizer = "bpfman.io.fexitprogramcontroller/finalizer"
-	// BpfApplicationFinalizer is the finalizer that holds a BpfApplication
-	BpfApplicationControllerFinalizer = "bpfman.io.bpfapplicationcontroller/finalizer"
+	// BpfmanConfigFinalizer is the finalizer that holds a Config from
+	// deletion until cleanup can be performed and prevents race conditions during deletion.
+	BpfmanConfigFinalizer = "bpfman.io/config-finalizer"
+	// ClBpfApplicationControllerFinalizer is the finalizer that holds a ClusterBpfApplication
+	ClBpfApplicationControllerFinalizer = "bpfman.io.clbpfapplicationcontroller/finalizer"
+	// NsBpfApplicationControllerFinalizer is the finalizer that holds a BpfApplication
+	NsBpfApplicationControllerFinalizer = "bpfman.io.nsbpfapplicationcontroller/finalizer"
 )
 
 // Must match the kernel's `bpf_prog_type` enum.
@@ -132,6 +125,8 @@ const (
 	Lsm
 	SkLookup
 	Syscall
+	// Keep "AllPrograms" at the end of the list.
+	AllPrograms
 )
 
 func (p ProgramType) Uint32() *uint32 {
@@ -241,6 +236,7 @@ const UprobeString = "uprobe"
 const FentryString = "fentry"
 const FexitString = "fexit"
 const ApplicationString = "application"
+const TcxString = "tcx"
 
 type ReconcileResult uint8
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2023 The bpfman Authors.
+Copyright 2025 The bpfman Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,34 +22,26 @@ package v1alpha1
 // BpfApplicationLister.
 type BpfApplicationListerExpansion interface{}
 
-// BpfProgramListerExpansion allows custom methods to be added to
-// BpfProgramLister.
-type BpfProgramListerExpansion interface{}
+// BpfApplicationNamespaceListerExpansion allows custom methods to be added to
+// BpfApplicationNamespaceLister.
+type BpfApplicationNamespaceListerExpansion interface{}
 
-// FentryProgramListerExpansion allows custom methods to be added to
-// FentryProgramLister.
-type FentryProgramListerExpansion interface{}
+// BpfApplicationStateListerExpansion allows custom methods to be added to
+// BpfApplicationStateLister.
+type BpfApplicationStateListerExpansion interface{}
 
-// FexitProgramListerExpansion allows custom methods to be added to
-// FexitProgramLister.
-type FexitProgramListerExpansion interface{}
+// BpfApplicationStateNamespaceListerExpansion allows custom methods to be added to
+// BpfApplicationStateNamespaceLister.
+type BpfApplicationStateNamespaceListerExpansion interface{}
 
-// KprobeProgramListerExpansion allows custom methods to be added to
-// KprobeProgramLister.
-type KprobeProgramListerExpansion interface{}
+// ClusterBpfApplicationListerExpansion allows custom methods to be added to
+// ClusterBpfApplicationLister.
+type ClusterBpfApplicationListerExpansion interface{}
 
-// TcProgramListerExpansion allows custom methods to be added to
-// TcProgramLister.
-type TcProgramListerExpansion interface{}
+// ClusterBpfApplicationStateListerExpansion allows custom methods to be added to
+// ClusterBpfApplicationStateLister.
+type ClusterBpfApplicationStateListerExpansion interface{}
 
-// TracepointProgramListerExpansion allows custom methods to be added to
-// TracepointProgramLister.
-type TracepointProgramListerExpansion interface{}
-
-// UprobeProgramListerExpansion allows custom methods to be added to
-// UprobeProgramLister.
-type UprobeProgramListerExpansion interface{}
-
-// XdpProgramListerExpansion allows custom methods to be added to
-// XdpProgramLister.
-type XdpProgramListerExpansion interface{}
+// ConfigListerExpansion allows custom methods to be added to
+// ConfigLister.
+type ConfigListerExpansion interface{}

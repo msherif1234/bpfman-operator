@@ -1,2 +1,4 @@
 resources:
-  - monitor.yaml
+  - agent-metrics-service.yaml
+  - controller-manager-metrics-service.yaml
+  - role.yaml

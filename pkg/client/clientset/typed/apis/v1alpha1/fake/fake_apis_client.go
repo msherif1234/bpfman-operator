@@ -1,5 +1,5 @@
 /*
-Copyright 2023 The bpfman Authors.
+Copyright 2025 The bpfman Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,40 +28,24 @@ type FakeBpfmanV1alpha1 struct {
 	*testing.Fake
 }
 
-func (c *FakeBpfmanV1alpha1) BpfApplications() v1alpha1.BpfApplicationInterface {
-	return &FakeBpfApplications{c}
+func (c *FakeBpfmanV1alpha1) BpfApplications(namespace string) v1alpha1.BpfApplicationInterface {
+	return newFakeBpfApplications(c, namespace)
 }
 
-func (c *FakeBpfmanV1alpha1) BpfPrograms() v1alpha1.BpfProgramInterface {
-	return &FakeBpfPrograms{c}
+func (c *FakeBpfmanV1alpha1) BpfApplicationStates(namespace string) v1alpha1.BpfApplicationStateInterface {
+	return newFakeBpfApplicationStates(c, namespace)
 }
 
-func (c *FakeBpfmanV1alpha1) FentryPrograms() v1alpha1.FentryProgramInterface {
-	return &FakeFentryPrograms{c}
+func (c *FakeBpfmanV1alpha1) ClusterBpfApplications() v1alpha1.ClusterBpfApplicationInterface {
+	return newFakeClusterBpfApplications(c)
 }
 
-func (c *FakeBpfmanV1alpha1) FexitPrograms() v1alpha1.FexitProgramInterface {
-	return &FakeFexitPrograms{c}
+func (c *FakeBpfmanV1alpha1) ClusterBpfApplicationStates() v1alpha1.ClusterBpfApplicationStateInterface {
+	return newFakeClusterBpfApplicationStates(c)
 }
 
-func (c *FakeBpfmanV1alpha1) KprobePrograms() v1alpha1.KprobeProgramInterface {
-	return &FakeKprobePrograms{c}
-}
-
-func (c *FakeBpfmanV1alpha1) TcPrograms() v1alpha1.TcProgramInterface {
-	return &FakeTcPrograms{c}
-}
-
-func (c *FakeBpfmanV1alpha1) TracepointPrograms() v1alpha1.TracepointProgramInterface {
-	return &FakeTracepointPrograms{c}
-}
-
-func (c *FakeBpfmanV1alpha1) UprobePrograms() v1alpha1.UprobeProgramInterface {
-	return &FakeUprobePrograms{c}
-}
-
-func (c *FakeBpfmanV1alpha1) XdpPrograms() v1alpha1.XdpProgramInterface {
-	return &FakeXdpPrograms{c}
+func (c *FakeBpfmanV1alpha1) Configs() v1alpha1.ConfigInterface {
+	return newFakeConfigs(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

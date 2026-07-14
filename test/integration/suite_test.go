@@ -7,11 +7,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kong/kubernetes-testing-framework/pkg/clusters"
-	"github.com/kong/kubernetes-testing-framework/pkg/clusters/addons/loadimage"
 	"github.com/kong/kubernetes-testing-framework/pkg/clusters/types/kind"
 	"github.com/kong/kubernetes-testing-framework/pkg/environments"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -22,6 +23,8 @@ import (
 	"github.com/bpfman/bpfman-operator/internal"
 	"github.com/bpfman/bpfman-operator/pkg/client/clientset"
 	bpfmanHelpers "github.com/bpfman/bpfman-operator/pkg/helpers"
+
+	"github.com/bpfman/bpfman-operator/test/integration/loadimagearchive"
 )
 
 var (
@@ -35,55 +38,83 @@ var (
 	bpfmanAgentImage    = os.Getenv("BPFMAN_AGENT_IMG")
 	bpfmanOperatorImage = os.Getenv("BPFMAN_OPERATOR_IMG")
 
-	existingCluster      = os.Getenv("USE_EXISTING_KIND_CLUSTER")
-	keepTestCluster      = func() bool { return os.Getenv("TEST_KEEP_CLUSTER") == "true" || existingCluster != "" }()
+	existingKindCluster = os.Getenv("USE_EXISTING_KIND_CLUSTER")
+	useExistingCluster  = os.Getenv("USE_EXISTING_CLUSTER") == "true"
+	keepTestCluster     = func() bool {
+		return os.Getenv("TEST_KEEP_CLUSTER") == "true" || existingKindCluster != "" || useExistingCluster
+	}()
 	keepKustomizeDeploys = func() bool { return os.Getenv("TEST_KEEP_KUSTOMIZE_DEPLOYS") == "true" }()
+	skipBpfmanDeploy     = func() bool { return os.Getenv("SKIP_BPFMAN_DEPLOY") == "true" }()
+
+	hasMonitoring bool
 
 	cleanup = []func(context.Context) error{}
+
 )
 
 const (
-	bpfmanKustomize = "../../config/test"
-	bpfmanConfigMap = "../../config/bpfman-deployment/config.yaml"
+	bpfmanCRD              = "../../config/crd"
+	bpfmanKustomize        = "../../config/test"
+	bpfmanKustomizationEnv = "kustomization.yaml.env"
+	newImageName           = "NEW_IMAGE_NAME"
+	newImageTag            = "NEW_IMAGE_TAG"
 )
 
 func TestMain(m *testing.M) {
 	logf.SetLogger(zap.New())
 
-	// check that we have the bpfman-agent, and bpfman-operator images to use for the tests.
-	// generally the runner of the tests should have built these from the latest
-	// changes prior to the tests and fed them to the test suite.
-	if bpfmanAgentImage == "" || bpfmanOperatorImage == "" {
-		exitOnErr(fmt.Errorf("BPFMAN_AGENT_IMG, and BPFMAN_OPERATOR_IMG must be provided"))
-	} else {
-		fmt.Printf("INFO: using bpfmanAgentImage=%s and bpfmanOperatorImage=%s\n", bpfmanAgentImage, bpfmanOperatorImage)
-	}
-
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	// to use the provided bpfman-agent, and bpfman-operator images we will need to add
-	// them as images to load in the test cluster via an addon.
-	loadImages, err := loadimage.NewBuilder().WithImage(bpfmanAgentImage)
-	exitOnErr(err)
-	loadImages, err = loadImages.WithImage(bpfmanOperatorImage)
-	exitOnErr(err)
-
-	if existingCluster != "" {
-		fmt.Printf("INFO: existing kind cluster %s was provided\n", existingCluster)
-
-		// if an existing cluster was provided, build a test env out of that instead
-		cluster, err := kind.NewFromExisting(existingCluster)
+	if useExistingCluster {
+		// An existing, non-kind cluster -- e.g. OpenShift reached via
+		// `oc login`. Its images come from a registry the cluster can
+		// already pull from, so the kind image-load addon does not
+		// apply and the operator/agent image env vars are not needed.
+		fmt.Println("INFO: using the existing cluster from the current kubeconfig context")
+		cluster, err := newExistingCluster()
 		exitOnErr(err)
-		env, err = environments.NewBuilder().WithAddons(loadImages.Build()).WithExistingCluster(cluster).Build(ctx)
+		fmt.Printf("INFO: attached to existing cluster (context %q)\n", cluster.Name())
+		env, err = environments.NewBuilder().WithExistingCluster(cluster).Build(ctx)
 		exitOnErr(err)
 	} else {
-		fmt.Println("INFO: creating a new kind cluster")
-		// create the testing environment and cluster
-		env, err = environments.NewBuilder().WithAddons(loadImages.Build()).Build(ctx)
+		// check that we have the bpfman-agent, and bpfman-operator images to use for the tests.
+		// generally the runner of the tests should have built these from the latest
+		// changes prior to the tests and fed them to the test suite.
+		if bpfmanAgentImage == "" || bpfmanOperatorImage == "" {
+			exitOnErr(fmt.Errorf("BPFMAN_AGENT_IMG, and BPFMAN_OPERATOR_IMG must be provided"))
+		}
+		fmt.Printf("INFO: using bpfmanAgentImage=%s and bpfmanOperatorImage=%s\n", bpfmanAgentImage, bpfmanOperatorImage)
+
+		ociBin := os.Getenv("OCI_BIN")
+		if ociBin == "" {
+			ociBin = "docker" // default if OCI_BIN is not set.
+		}
+
+		// to use the provided bpfman-agent, and bpfman-operator images we will need to add
+		// them as images to load in the test cluster via an addon.
+		fmt.Println("INFO: Loading images")
+		loadImages, err := loadimagearchive.NewBuilder(ociBin).WithImage(bpfmanAgentImage)
+		exitOnErr(err)
+		loadImages, err = loadImages.WithImage(bpfmanOperatorImage)
 		exitOnErr(err)
 
-		fmt.Printf("INFO: new kind cluster %s was created\n", env.Cluster().Name())
+		if existingKindCluster != "" {
+			fmt.Printf("INFO: existing kind cluster %s was provided\n", existingKindCluster)
+
+			// if an existing cluster was provided, build a test env out of that instead
+			cluster, err := kind.NewFromExisting(existingKindCluster)
+			exitOnErr(err)
+			env, err = environments.NewBuilder().WithAddons(loadImages.Build()).WithExistingCluster(cluster).Build(ctx)
+			exitOnErr(err)
+		} else {
+			fmt.Println("INFO: creating a new kind cluster")
+			// create the testing environment and cluster
+			env, err = environments.NewBuilder().WithAddons(loadImages.Build()).Build(ctx)
+			exitOnErr(err)
+
+			fmt.Printf("INFO: new kind cluster %s was created\n", env.Cluster().Name())
+		}
 	}
 
 	if !keepTestCluster {
@@ -93,22 +124,61 @@ func TestMain(m *testing.M) {
 		})
 	}
 
-	// deploy the BPFMAN Operator and revelevant CRDs
-	fmt.Println("INFO: deploying bpfman operator to test cluster")
-	exitOnErr(clusters.KustomizeDeployForCluster(ctx, env.Cluster(), bpfmanKustomize))
-	if !keepKustomizeDeploys {
-		addCleanup(func(context.Context) error {
-			cleanupLog("delete bpfman configmap to cleanup bpfman daemon")
-			env.Cluster().Client().CoreV1().ConfigMaps(internal.BpfmanNs).Delete(ctx, internal.BpfmanConfigName, metav1.DeleteOptions{})
-			clusters.DeleteManifestByYAML(ctx, env.Cluster(), bpfmanConfigMap)
-			waitForBpfmanConfigDelete(ctx, env)
-			cleanupLog("deleting bpfman namespace")
-			return env.Cluster().Client().CoreV1().Namespaces().Delete(ctx, internal.BpfmanNs, metav1.DeleteOptions{})
-		})
+	fmt.Println("INFO: Get the bpfman client")
+	bpfmanClient = bpfmanHelpers.GetClientOrDie()
+
+	// Detect optional API groups: monitoring.coreos.com (metrics-proxy) and
+	// security-profiles-operator.x-k8s.io (needed on an existing OpenShift
+	// cluster for the example workloads' SELinux profiles).
+	apiList, err := env.Cluster().Client().Discovery().ServerGroups()
+	exitOnErr(err)
+	var hasSelinuxProfiles bool
+	for _, g := range apiList.Groups {
+		switch g.Name {
+		case "monitoring.coreos.com":
+			hasMonitoring = true
+		case "security-profiles-operator.x-k8s.io":
+			hasSelinuxProfiles = true
+		}
+	}
+	fmt.Printf("INFO: hasMonitoring=%v\n", hasMonitoring)
+
+	// On an existing cluster the workloads use the selinux example overlay,
+	// which ships SelinuxProfile resources; the security-profiles-operator
+	// must therefore be installed.
+	if useExistingCluster && !hasSelinuxProfiles {
+		exitOnErr(fmt.Errorf("the security-profiles-operator is required to run these tests against an existing cluster, but its API group security-profiles-operator.x-k8s.io was not found; install it first"))
 	}
 
-	bpfmanClient = bpfmanHelpers.GetClientOrDie()
-	exitOnErr(waitForBpfmanReadiness(ctx, env))
+	// deploy the BPFMAN Operator and relevant CRDs.
+	if !skipBpfmanDeploy {
+		// Install the CRDs, RBAC and operator-deployment first.
+		fmt.Println("INFO: deploying bpfman operator to test cluster")
+		exitOnErr(generateKustomization(bpfmanKustomize, bpfmanKustomizationEnv, bpfmanOperatorImage))
+		exitOnErr(clusters.KustomizeDeployForCluster(ctx, env.Cluster(), bpfmanKustomize))
+		// The operator bootstraps the Config CR on startup using
+		// BPFMAN_IMG and BPFMAN_AGENT_IMG from its deployment env
+		// vars; both are required.
+		if !keepKustomizeDeploys {
+			addCleanup(func(context.Context) error {
+				ctxTimeout, cancelFunc := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancelFunc()
+
+				cleanupLog("delete bpfman Config to cleanup bpfman daemon")
+				bpfmanClient.BpfmanV1alpha1().Configs().Delete(ctxTimeout, internal.BpfmanConfigName, metav1.DeleteOptions{})
+				waitForBpfmanConfigDelete(ctxTimeout, env)
+				cleanupLog("deleting bpfman namespace")
+				return env.Cluster().Client().CoreV1().Namespaces().Delete(ctxTimeout, internal.BpfmanNamespace, metav1.DeleteOptions{})
+			})
+		}
+	} else {
+		fmt.Println("INFO: skipping bpfman deployment (SKIP_BPFMAN_DEPLOY=true)")
+	}
+
+	// Make sure bpfman resources are up.
+	ctxTimeout, cancelFunc := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancelFunc()
+	exitOnErr(waitForBpfmanReadiness(ctxTimeout, env))
 
 	exit := m.Run()
 	// If there's any errors in e2e tests dump diagnostics
@@ -174,7 +244,7 @@ func waitForBpfmanReadiness(ctx context.Context, env environments.Environment) e
 			fmt.Println("INFO: waiting for bpfman")
 			var controlplaneReady, dataplaneReady bool
 
-			controlplane, err := env.Cluster().Client().AppsV1().Deployments(internal.BpfmanNs).Get(ctx, internal.BpfmanOperatorName, metav1.GetOptions{})
+			controlplane, err := env.Cluster().Client().AppsV1().Deployments(internal.BpfmanNamespace).Get(ctx, internal.BpfmanOperatorName, metav1.GetOptions{})
 			if err != nil {
 				if errors.IsNotFound(err) {
 					fmt.Println("INFO: bpfman-operator dep not found yet")
@@ -186,7 +256,7 @@ func waitForBpfmanReadiness(ctx context.Context, env environments.Environment) e
 				controlplaneReady = true
 			}
 
-			dataplane, err := env.Cluster().Client().AppsV1().DaemonSets(internal.BpfmanNs).Get(ctx, internal.BpfmanDsName, metav1.GetOptions{})
+			dataplane, err := env.Cluster().Client().AppsV1().DaemonSets(internal.BpfmanNamespace).Get(ctx, internal.BpfmanDsName, metav1.GetOptions{})
 			if err != nil {
 				if errors.IsNotFound(err) {
 					fmt.Println("INFO: bpfman daemon not found yet")
@@ -218,14 +288,91 @@ func waitForBpfmanConfigDelete(ctx context.Context, env environments.Environment
 		default:
 			fmt.Println("INFO: waiting for bpfman config deletion")
 
-			_, err := env.Cluster().Client().CoreV1().ConfigMaps(internal.BpfmanNs).Get(ctx, internal.BpfmanConfigName, metav1.GetOptions{})
-			if err != nil {
-				if errors.IsNotFound(err) {
-					fmt.Println("INFO: bpfman configmap deleted successfully")
-					return nil
+			checks := []struct {
+				check func() error
+				msg   string
+			}{
+				{
+					check: func() error {
+						_, err := env.Cluster().Client().StorageV1().CSIDrivers().Get(ctx,
+							internal.BpfmanCsiDriverName, metav1.GetOptions{})
+						return err
+					},
+					msg: "INFO: bpfman csidriver deleted successfully",
+				},
+				{
+					check: func() error {
+						_, err := env.Cluster().Client().CoreV1().ConfigMaps(internal.BpfmanNamespace).Get(ctx,
+							internal.BpfmanConfigName, metav1.GetOptions{})
+						return err
+					},
+					msg: "INFO: bpfman configmap deleted successfully",
+				},
+				{
+					check: func() error {
+						_, err := env.Cluster().Client().AppsV1().DaemonSets(internal.BpfmanNamespace).Get(ctx,
+							internal.BpfmanDsName, metav1.GetOptions{})
+						return err
+					},
+					msg: "INFO: bpfman daemon daemonset deleted successfully",
+				},
+			}
+			if hasMonitoring {
+				checks = append(checks, struct {
+					check func() error
+					msg   string
+				}{
+					check: func() error {
+						_, err := env.Cluster().Client().AppsV1().DaemonSets(internal.BpfmanNamespace).Get(ctx,
+							internal.BpfmanMetricsProxyDsName, metav1.GetOptions{})
+						return err
+					},
+					msg: "INFO: bpfman metrics proxy daemonset deleted successfully",
+				})
+			}
+
+			deleteCount := 0
+			for _, c := range checks {
+				if err := c.check(); err != nil {
+					if !errors.IsNotFound(err) {
+						return err
+					}
+					fmt.Println(c.msg)
+					deleteCount++
 				}
-				return err
+			}
+			if deleteCount == len(checks) {
+				return nil
 			}
 		}
 	}
+}
+
+func generateKustomization(kustomizeDir, templateFile, operatorImage string) error {
+	// Check if image contains SHA digest
+	if strings.Contains(operatorImage, "@sha256:") {
+		return fmt.Errorf("image with SHA digest not supported: %s", operatorImage)
+	}
+
+	// Read kustomization.yaml.env template and replace placeholders
+	envData, err := os.ReadFile(filepath.Join(kustomizeDir, templateFile))
+	if err != nil {
+		return err
+	}
+
+	// Split operatorImage into name and tag
+	imageParts := strings.Split(operatorImage, ":")
+	imageName := imageParts[0]
+	imageTag := "latest"
+	if len(imageParts) > 1 {
+		imageTag = imageParts[1]
+	}
+
+	// Replace placeholders
+	kustomizationContent := string(envData)
+	kustomizationContent = strings.ReplaceAll(kustomizationContent, newImageName, imageName)
+	kustomizationContent = strings.ReplaceAll(kustomizationContent, newImageTag, imageTag)
+
+	// Write to kustomization.yaml
+	return os.WriteFile(filepath.Join(kustomizeDir, "kustomization.yaml"), []byte(kustomizationContent), 0644)
 }

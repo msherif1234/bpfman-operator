@@ -14,87 +14,211 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// +kubebuilder:validation:Required
 package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// InterfaceSelector defines interface to attach to.
+// DefaultAttachPriority is the default priority used when attaching BPF
+// programs (XDP, TC, TCX) to network interfaces. Priority determines execution
+// order relative to other programs at the same attachment point, where lower
+// values indicate higher precedence. Valid range is 0-1000.
+const DefaultAttachPriority int32 = 1000
+
+type InterfaceDiscovery struct {
+	// interfaceAutoDiscovery is an optional field. When enabled, the agent
+	// monitors the creation and deletion of interfaces and automatically
+	// attached eBPF programs to the newly discovered interfaces.
+	// CAUTION: This has the potential to attach a given eBPF program to a large
+	// number of interfaces. Use with caution.
+	// +optional
+	// +kubebuilder:default:=false
+	InterfaceAutoDiscovery *bool `json:"interfaceAutoDiscovery,omitempty"`
+
+	// excludeInterfaces is an optional field that contains a list of interface
+	// names that are excluded from interface discovery. The interface names in
+	// the list are case-sensitive. By default, the list contains the loopback
+	// interface, "lo". This field is only taken into consideration if
+	// interfaceAutoDiscovery is set to true.
+	// +optional
+	// +kubebuilder:default:={"lo"}
+	ExcludeInterfaces []string `json:"excludeInterfaces,omitempty"`
+
+	// allowedInterfaces is an optional field that contains a list of interface
+	// names that are allowed to be discovered. If empty, the agent will fetch all
+	// the interfaces in the system, excepting the ones listed in
+	// excludeInterfaces. if non-empty, only entries in the list will be considered
+	// for discovery. If an entry enclosed by slashes, such as `/br-/` or
+	// `/veth*/`, then the entry is considered as a regular expression for
+	// matching. Otherwise, the interface names in the list are case-sensitive.
+	// This field is only taken into consideration if interfaceAutoDiscovery is set
+	// to true.
+	// +optional
+	AllowedInterfaces []string `json:"allowedInterfaces,omitempty"`
+}
+
+// InterfaceSelector describes the set of interfaces to attach a program to.
 // +kubebuilder:validation:MaxProperties=1
 // +kubebuilder:validation:MinProperties=1
 type InterfaceSelector struct {
-	// Interfaces refers to a list of network interfaces to attach the BPF
-	// program to.
+	// interfacesDiscoveryConfig is an optional field that is used to control if
+	// and how to automatically discover interfaces. If the agent should
+	// automatically discover and attach eBPF programs to interfaces, use the
+	// fields under interfacesDiscoveryConfig to control what is allow and excluded
+	// from discovery.
 	// +optional
-	Interfaces *[]string `json:"interfaces,omitempty"`
+	InterfacesDiscoveryConfig *InterfaceDiscovery `json:"interfacesDiscoveryConfig,omitempty"`
 
-	// Attach BPF program to the primary interface on the node. Only 'true' accepted.
+	// interfaces is an optional field and is a list of network interface names to
+	// attach the eBPF program. The interface names in the list are case-sensitive.
 	// +optional
-	PrimaryNodeInterface *bool `json:"primarynodeinterface,omitempty"`
+	Interfaces []string `json:"interfaces,omitempty"`
+
+	// primaryNodeInterface is and optional field and indicates to attach the eBPF
+	// program to the primary interface on the Kubernetes node. Only 'true' is
+	// accepted.
+	// +optional
+	PrimaryNodeInterface *bool `json:"primaryNodeInterface,omitempty"`
 }
 
-// ContainerSelector identifies a set of containers. For example, this can be
-// used to identify a set of containers in which to attach uprobes.
-type ContainerSelector struct {
-	// Target namespaces.
+// ClContainerSelector identifies a set of containers.
+type ClContainerSelector struct {
+	// namespace is an optional field and indicates the target Kubernetes
+	// namespace. If not provided, all Kubernetes namespaces are included.
 	// +optional
-	// +kubebuilder:default:=""
-	Namespace string `json:"namespace"`
+	Namespace string `json:"namespace,omitempty"`
 
-	// Target pods. This field must be specified, to select all pods use
-	// standard metav1.LabelSelector semantics and make it empty.
+	// pods is a required field and indicates the target pods. To select all pods
+	// use the standard metav1.LabelSelector semantics and make it empty.
+	// +required
 	Pods metav1.LabelSelector `json:"pods"`
 
-	// Name(s) of container(s).  If none are specified, all containers in the
-	// pod are selected.
+	// containerNames is an optional field and is a list of container names in a
+	// pod to attach the eBPF program. If no names are specified, all containers
+	// in the pod are selected.
 	// +optional
-	ContainerNames *[]string `json:"containernames,omitempty"`
+	ContainerNames []string `json:"containerNames,omitempty"`
 }
 
-// BpfProgramCommon defines the common attributes for all BPF programs
-type BpfProgramCommon struct {
-	// BpfFunctionName is the name of the function that is the entry point for the BPF
-	// program
-	BpfFunctionName string `json:"bpffunctionname"`
+// ContainerSelector identifies a set of containers. It is different from ClContainerSelector
+// in that "Namespace" was removed. Namespace scoped programs can only attach to the namespace
+// they are created in.
+type ContainerSelector struct {
+	// pods is a required field and indicates the target pods. To select all pods
+	// use the standard metav1.LabelSelector semantics and make it empty.
+	// +required
+	Pods metav1.LabelSelector `json:"pods"`
 
-	// MapOwnerSelector is used to select the loaded eBPF program this eBPF program
-	// will share a map with. The value is a label applied to the BpfProgram to select.
-	// The selector must resolve to exactly one instance of a BpfProgram on a given node
-	// or the eBPF program will not load.
+	// containerNames is an optional field and is a list of container names in a
+	// pod to attach the eBPF program. If no names are  specified, all containers
+	// in the pod are selected.
 	// +optional
-	MapOwnerSelector metav1.LabelSelector `json:"mapownerselector"`
+	ContainerNames []string `json:"containerNames,omitempty"`
+}
+
+// ClNetworkNamespaceSelector identifies a network namespace for network-related
+// program types in the cluster-scoped ClusterBpfApplication object.
+type ClNetworkNamespaceSelector struct {
+	// namespace is an optional field and indicates the target network namespace.
+	// If not provided, the default network namespace is used.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// pods is a required field and indicates the target pods. To select all pods
+	// use the standard metav1.LabelSelector semantics and make it empty.
+	// +required
+	Pods metav1.LabelSelector `json:"pods"`
+}
+
+// NetworkNamespaceSelector identifies a network namespace for network-related
+// program types in the namespace-scoped BpfApplication object.
+type NetworkNamespaceSelector struct {
+	// pods is a required field and indicates the target pods. To select all pods
+	// use the standard metav1.LabelSelector semantics and make it empty.
+	// +required
+	Pods metav1.LabelSelector `json:"pods"`
 }
 
 // BpfAppCommon defines the common attributes for all BpfApp programs
 type BpfAppCommon struct {
-	// NodeSelector allows the user to specify which nodes to deploy the
-	// bpf program to. This field must be specified, to select all nodes
-	// use standard metav1.LabelSelector semantics and make it empty.
-	NodeSelector metav1.LabelSelector `json:"nodeselector"`
+	// nodeSelector is a required field and allows the user to specify which
+	// Kubernetes nodes to deploy the eBPF programs. To select all nodes use
+	// standard metav1.LabelSelector semantics and make it empty.
+	// +required
+	NodeSelector metav1.LabelSelector `json:"nodeSelector"`
 
-	// GlobalData allows the user to set global variables when the program is loaded
-	// with an array of raw bytes. This is a very low level primitive. The caller
-	// is responsible for formatting the byte string appropriately considering
-	// such things as size, endianness, alignment and packing of data structures.
+	// globalData is an optional field that allows the user to set global variables
+	// when the program is loaded. This allows the same compiled bytecode to be
+	// deployed by different BPF Applications to behave differently based on
+	// globalData configuration values.  It uses an array of raw bytes. This is a
+	// very low level primitive. The caller is responsible for formatting the byte
+	// string appropriately considering such things as size, endianness, alignment
+	// and packing of data structures.
 	// +optional
-	GlobalData map[string][]byte `json:"globaldata,omitempty"`
+	GlobalData map[string][]byte `json:"globalData,omitempty"`
 
-	// Bytecode configures where the bpf program's bytecode should be loaded
-	// from.
-	ByteCode BytecodeSelector `json:"bytecode"`
+	// bytecode is a required field and configures where the eBPF program's
+	// bytecode should be loaded from. The image must contain one or more
+	// eBPF programs.
+	// +required
+	ByteCode ByteCodeSelector `json:"byteCode"`
+
+	// mapOwnerSelector is an optional field used to share maps across
+	// applications. eBPF programs loaded with the same ClusterBpfApplication or
+	// BpfApplication instance do not need to use this field. This label selector
+	// allows maps from a different ClusterBpfApplication or BpfApplication
+	// instance to be used by this instance.
+	// TODO: mapOwnerSelector is currently not supported due to recent code rework.
+	// +optional
+	MapOwnerSelector *metav1.LabelSelector `json:"mapOwnerSelector,omitempty"`
 }
 
-// BpfProgramStatusCommon defines the BpfProgram status
-type BpfProgramStatusCommon struct {
-	// Conditions houses the global cluster state for the eBPFProgram. The explicit
-	// condition types are defined internally.
+// status reflects the status of a BPF Application and indicates if all the
+// eBPF programs for a given instance loaded successfully or not.
+type BpfAppStatus struct {
+	// conditions contains the summary state for all eBPF programs defined in the
+	// BPF Application instance for all the Kubernetes nodes in the cluster.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+}
+
+// AttachInfoStateCommon reflects the status for one attach point for a given bpf
+// application program
+type AttachInfoStateCommon struct {
+	// shouldAttach reflects whether the attachment should exist.
+	// +required
+	ShouldAttach bool `json:"shouldAttach"`
+	// uuid is an Unique identifier for the attach point assigned by bpfman agent.
+	// +required
+	UUID string `json:"uuid"`
+	// linkId is an identifier for the link assigned by bpfman. This field is
+	// empty until the program is successfully attached and bpfman returns the
+	// id.
+	// +optional
+	LinkId *uint32 `json:"linkId,omitempty"`
+	// linkStatus reflects whether the attachment has been reconciled
+	// successfully, and if not, why.
+	// +required
+	LinkStatus LinkStatus `json:"linkStatus"`
+}
+
+type BpfProgramStateCommon struct {
+	// name is the name of the function that is the entry point for the eBPF
+	// program
+	// +required
+	Name string `json:"name"`
+	// programLinkStatus reflects whether all links requested for the program
+	// are in the correct state.
+	// +required
+	ProgramLinkStatus ProgramLinkStatus `json:"programLinkStatus"`
+	// programId is the id of the program in the kernel.  Not set until the
+	// program is loaded.
+	// +optional
+	ProgramId *uint32 `json:"programId,omitempty"`
 }
 
 // PullPolicy describes a policy for if/when to pull a container image
@@ -110,37 +234,65 @@ const (
 	PullIfNotPresent PullPolicy = "IfNotPresent"
 )
 
-// BytecodeSelector defines the various ways to reference bpf bytecode objects.
-type BytecodeSelector struct {
-	// Image used to specify a bytecode container image.
-	Image *BytecodeImage `json:"image,omitempty"`
+// ByteCodeSelector defines the various ways to reference BPF bytecode objects.
+// +kubebuilder:validation:MaxProperties=1
+// +kubebuilder:validation:MinProperties=1
+type ByteCodeSelector struct {
+	// image is an optional field and used to specify details on how to retrieve an
+	// eBPF program packaged in a OCI container image from a given registry.
+	// +optional
+	Image *ByteCodeImage `json:"image,omitempty"`
 
-	// Path is used to specify a bytecode object via filepath.
+	// path is an optional field and used to specify a bytecode object file via
+	// filepath on a Kubernetes node.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^(/[^/\0]+)+/?$`
 	Path *string `json:"path,omitempty"`
 }
 
-// BytecodeImage defines how to specify a bytecode container image.
-type BytecodeImage struct {
-	// Valid container image URL used to reference a remote bytecode image.
+// ByteCodeImage defines how to specify a bytecode container image.
+type ByteCodeImage struct {
+	// url is a required field and is a valid container image URL used to reference
+	// a remote bytecode image. url must not be an empty string, must not exceed
+	// 525 characters in length and must be a valid URL.
+	// +required
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength:=525
+	// +kubebuilder:validation:Pattern=`[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`
 	Url string `json:"url"`
 
-	// PullPolicy describes a policy for if/when to pull a bytecode image. Defaults to IfNotPresent.
+	// pullPolicy is an optional field that describes a policy for if/when to pull
+	// a bytecode image. Defaults to IfNotPresent. Allowed values are:
+	//   Always, IfNotPresent and Never
+	//
+	// When set to Always, the given image will be pulled even if the image is
+	// already present on the node.
+	//
+	// When set to IfNotPresent, the given image will only be pulled if it is not
+	// present on the node.
+	//
+	// When set to Never, the given image will never be pulled and must be
+	// loaded on the node by some other means.
+	// +optional
 	// +kubebuilder:default:=IfNotPresent
-	// +optional
-	ImagePullPolicy PullPolicy `json:"imagepullpolicy"`
+	ImagePullPolicy PullPolicy `json:"imagePullPolicy,omitempty"`
 
-	// ImagePullSecret is the name of the secret bpfman should use to get remote image
-	// repository secrets.
+	// imagePullSecret is an optional field and indicates the secret which contains
+	// the credentials to access the image repository.
 	// +optional
-	ImagePullSecret *ImagePullSecretSelector `json:"imagepullsecret,omitempty"`
+	ImagePullSecret *ImagePullSecretSelector `json:"imagePullSecret,omitempty"`
 }
 
 // ImagePullSecretSelector defines the name and namespace of an image pull secret.
 type ImagePullSecretSelector struct {
-	// Name of the secret which contains the credentials to access the image repository.
+	// name is a required field and is the name of the secret which contains the
+	// credentials to access the image repository.
+	// +required
 	Name string `json:"name"`
 
-	// Namespace of the secret which contains the credentials to access the image repository.
+	// namespace is a required field and is the namespace of the secret which
+	// contains the credentials to access the image repository.
+	// +required
 	Namespace string `json:"namespace"`
 }
 
@@ -148,86 +300,81 @@ type ImagePullSecretSelector struct {
 // Status Conditions - BPF Programs
 // -----------------------------------------------------------------------------
 
-// ProgramConditionType is a condition type to indicate the status of a BPF
-// program at the cluster level.
-type ProgramConditionType string
+// BpfApplicationConditionType is a condition type to indicate the status of a BPF
+// application at the cluster level.
+type BpfApplicationConditionType string
 
 const (
-	// ProgramNotYetLoaded indicates that the program in question has not
-	// yet been loaded on all nodes in the cluster.
-	ProgramNotYetLoaded ProgramConditionType = "NotYetLoaded"
+	// BpfAppCondPending indicates that bpfman has not yet completed reconciling
+	// the Bpf Application on all nodes in the cluster.
+	BpfAppCondPending BpfApplicationConditionType = "Pending"
 
-	// ProgramReconcileError indicates that an unforeseen situation has
-	// occurred in the controller logic, and the controller will retry.
-	ProgramReconcileError ProgramConditionType = "ReconcileError"
+	// BpfAppCondSuccess indicates that the BPF Application has been
+	// successfully loaded and attached as requested on all nodes in the
+	// cluster.
+	BpfAppCondSuccess BpfApplicationConditionType = "Success"
 
-	// BpfmanProgConfigReconcileSuccess indicates that the BPF program has been
-	// successfully reconciled.
-	//
-	// TODO: we should consider removing "reconciled" type logic from the
-	// public API as it's an implementation detail of our use of controller
-	// runtime, but not necessarily relevant to human users or integrations.
-	//
-	// See: https://github.com/bpfman/bpfman/issues/430
-	ProgramReconcileSuccess ProgramConditionType = "ReconcileSuccess"
+	// BpfAppCondError indicates that an error has occurred on one or more nodes
+	// while attempting to apply the configuration described in the CRD.
+	BpfAppCondError BpfApplicationConditionType = "Error"
 
-	// ProgramDeleteError indicates that the BPF program was marked for
-	// deletion, but deletion was unsuccessful.
-	ProgramDeleteError ProgramConditionType = "DeleteError"
+	// BpfAppCondDeleteError indicates that the BPF Application was marked for
+	// deletion, but deletion was unsuccessful on one or more nodes.
+	BpfAppCondDeleteError BpfApplicationConditionType = "DeleteError"
 )
 
-// Condition is a helper method to promote any given ProgramConditionType to
-// a full metav1.Condition in an opinionated fashion.
+// Condition is a helper method to promote any given BpfApplicationConditionType
+// to a full metav1.Condition in an opinionated fashion.
 //
 // TODO: this was created in the early days to provide at least SOME status
-// information to the user, but the hardcoded messages need to be replaced
-// in the future with dynamic and situation-aware messages later.
+// information to the user, but the hardcoded messages need to be replaced in
+// the future with dynamic and situation-aware messages later.
 //
 // See: https://github.com/bpfman/bpfman/issues/430
-func (b ProgramConditionType) Condition(message string) metav1.Condition {
+func (b BpfApplicationConditionType) Condition(message string) metav1.Condition {
 	cond := metav1.Condition{}
 
 	switch b {
-	case ProgramNotYetLoaded:
+	case BpfAppCondPending:
 		if len(message) == 0 {
-			message = "Waiting for Program Object to be reconciled to all nodes"
+			message = "Waiting for Bpf Application Object to be reconciled on all nodes"
 		}
-
+		condType := string(BpfAppCondPending)
 		cond = metav1.Condition{
-			Type:    string(ProgramNotYetLoaded),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "ProgramsNotYetLoaded",
+			Reason:  "Pending",
 			Message: message,
 		}
-	case ProgramReconcileError:
+	case BpfAppCondError:
 		if len(message) == 0 {
-			message = "bpfProgramReconciliation failed"
+			message = "An error has occurred on one or more nodes"
 		}
-
+		condType := string(BpfAppCondError)
 		cond = metav1.Condition{
-			Type:    string(ProgramReconcileError),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "ReconcileError",
+			Reason:  "Error",
 			Message: message,
 		}
-	case ProgramReconcileSuccess:
+	case BpfAppCondSuccess:
 		if len(message) == 0 {
-			message = "bpfProgramReconciliation Succeeded on all nodes"
+			message = "BPF application configuration successfully applied on all nodes"
 		}
-
+		condType := string(BpfAppCondSuccess)
 		cond = metav1.Condition{
-			Type:    string(ProgramReconcileSuccess),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "ReconcileSuccess",
+			Reason:  "Success",
 			Message: message,
 		}
-	case ProgramDeleteError:
+	case BpfAppCondDeleteError:
 		if len(message) == 0 {
-			message = "Program Deletion failed"
+			message = "Deletion failed on one or more nodes"
 		}
-
+		condType := string(BpfAppCondDeleteError)
 		cond = metav1.Condition{
-			Type:    string(ProgramDeleteError),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
 			Reason:  "DeleteError",
 			Message: message,
@@ -237,132 +384,129 @@ func (b ProgramConditionType) Condition(message string) metav1.Condition {
 	return cond
 }
 
-// BpfProgramConditionType is a condition type to indicate the status of a BPF
-// program at the individual node level.
-type BpfProgramConditionType string
+// BpfApplicationStateConditionType is used to indicate the status of a BPF
+// application on a given node.
+type BpfApplicationStateConditionType string
 
 const (
-	// BpfProgCondLoaded indicates that the eBPF program was successfully loaded
-	// into the kernel on a specific node.
-	BpfProgCondLoaded BpfProgramConditionType = "Loaded"
+	// BpfAppStateCondPending indicates that bpfman has not yet completed
+	// reconciling the Bpf Application on the given node.
+	BpfAppStateCondPending BpfApplicationStateConditionType = "Pending"
 
-	// BpfProgCondNotLoaded indicates that the eBPF program has not yet been
-	// loaded into the kernel on a specific node.
-	BpfProgCondNotLoaded BpfProgramConditionType = "NotLoaded"
+	// BpfAppStateCondSuccess indicates that the BPF Application has been
+	// successfully loaded and attached as requested on the given node.
+	BpfAppStateCondSuccess BpfApplicationStateConditionType = "Success"
 
-	// BpfProgCondUnloaded indicates that in the midst of trying to remove the
-	// eBPF program from the kernel on the node, that program has not yet been
-	// removed.
-	BpfProgCondNotUnloaded BpfProgramConditionType = "NotUnLoaded"
+	// BpfAppStateCondError indicates that an error has occurred on the given
+	// node while attempting to apply the configuration described in the CRD.
+	BpfAppStateCondError BpfApplicationStateConditionType = "Error"
 
-	// BpfProgCondNotSelected indicates that the eBPF program is not scheduled to be loaded
-	// on a specific node.
-	BpfProgCondNotSelected BpfProgramConditionType = "NotSelected"
+	// BpfAppStateCondError indicates that an error has occurred on the given
+	// node while attempting to apply the configuration described in the CRD.
+	BpfAppStateCondProgramListChangedError BpfApplicationStateConditionType = "ProgramListChangedError"
 
-	// BpfProgCondUnloaded indicates that the eBPF program has been unloaded from
-	// the kernel on a specific node.
-	BpfProgCondUnloaded BpfProgramConditionType = "Unloaded"
+	// BpfAppStateCondUnloadError indicates that the BPF Application was marked
+	// for deletion, but unloading one or more programs was unsuccessful on the
+	// given node.
+	BpfAppStateCondUnloadError BpfApplicationStateConditionType = "UnloadError"
 
-	// BpfProgCondMapOwnerNotFound indicates that the eBPF program sharing a map with another
-	// eBPF program and that program does not exist.
-	BpfProgCondMapOwnerNotFound BpfProgramConditionType = "MapOwnerNotFound"
-
-	// BpfProgCondMapOwnerNotLoaded indicates that the eBPF program sharing a map with another
-	// eBPF program and that program is not loaded.
-	BpfProgCondMapOwnerNotLoaded BpfProgramConditionType = "MapOwnerNotLoaded"
-
-	// BpfProgCondBytecodeSelectorError indicates that an error occurred when trying to
-	// process the bytecode selector.
-	BpfProgCondBytecodeSelectorError BpfProgramConditionType = "BytecodeSelectorError"
-
-	// BpfProgCondNoContainersOnNode indicates that there are no containers on the node
-	// that match the container selector.
-	BpfProgCondNoContainersOnNode BpfProgramConditionType = "NoContainersOnNode"
-
-	// None of the above conditions apply
-	BpfProgCondNone BpfProgramConditionType = "None"
+	// BpfAppStateCondUnloaded indicates that the BPF Application was marked
+	// for deletion, and has been successfully unloaded.
+	BpfAppStateCondUnloaded BpfApplicationStateConditionType = "Unloaded"
 )
 
-// Condition is a helper method to promote any given BpfProgramConditionType to
-// a full metav1.Condition in an opinionated fashion.
-func (b BpfProgramConditionType) Condition() metav1.Condition {
+// Condition is a helper method to promote any given
+// BpfApplicationStateConditionType to a full metav1.Condition in an opinionated
+// fashion.
+func (b BpfApplicationStateConditionType) Condition() metav1.Condition {
 	cond := metav1.Condition{}
 
 	switch b {
-	case BpfProgCondLoaded:
+	case BpfAppStateCondPending:
+		condType := string(BpfAppStateCondPending)
 		cond = metav1.Condition{
-			Type:    string(BpfProgCondLoaded),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "bpfmanLoaded",
-			Message: "Successfully loaded bpfProgram",
+			Reason:  "Pending",
+			Message: "Not yet complete",
 		}
-	case BpfProgCondNotLoaded:
+	case BpfAppStateCondSuccess:
+		condType := string(BpfAppStateCondSuccess)
 		cond = metav1.Condition{
-			Type:    string(BpfProgCondNotLoaded),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "bpfmanNotLoaded",
-			Message: "Failed to load bpfProgram",
+			Reason:  "Success",
+			Message: "The BPF application has been successfully loaded and attached",
 		}
-	case BpfProgCondNotUnloaded:
+	case BpfAppStateCondError:
+		condType := string(BpfAppStateCondError)
 		cond = metav1.Condition{
-			Type:    string(BpfProgCondNotUnloaded),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "bpfmanNotUnloaded",
-			Message: "Failed to unload bpfProgram",
+			Reason:  "Error",
+			Message: "An error has occurred",
 		}
-	case BpfProgCondNotSelected:
+	case BpfAppStateCondUnloadError:
+		condType := string(BpfAppStateCondUnloadError)
 		cond = metav1.Condition{
-			Type:    string(BpfProgCondNotSelected),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "nodeNotSelected",
-			Message: "This node is not selected to run the bpfProgram",
+			Reason:  "Unload Error",
+			Message: "Unload failed for one or more programs",
 		}
-	case BpfProgCondUnloaded:
+	case BpfAppStateCondUnloaded:
+		condType := string(BpfAppStateCondUnloaded)
 		cond = metav1.Condition{
-			Type:    string(BpfProgCondUnloaded),
+			Type:    condType,
 			Status:  metav1.ConditionTrue,
-			Reason:  "bpfmanUnloaded",
-			Message: "This BpfProgram object and all it's bpfman programs have been unloaded",
-		}
-	case BpfProgCondMapOwnerNotFound:
-		cond = metav1.Condition{
-			Type:    string(BpfProgCondMapOwnerNotFound),
-			Status:  metav1.ConditionTrue,
-			Reason:  "mapOwnerNotFound",
-			Message: "BpfProgram map owner not found",
-		}
-	case BpfProgCondMapOwnerNotLoaded:
-		cond = metav1.Condition{
-			Type:    string(BpfProgCondMapOwnerNotLoaded),
-			Status:  metav1.ConditionTrue,
-			Reason:  "mapOwnerNotLoaded",
-			Message: "BpfProgram map owner not loaded",
-		}
-
-	case BpfProgCondBytecodeSelectorError:
-		cond = metav1.Condition{
-			Type:    string(BpfProgCondBytecodeSelectorError),
-			Status:  metav1.ConditionTrue,
-			Reason:  "bytecodeSelectorError",
-			Message: "There was an error processing the provided bytecode selector",
-		}
-
-	case BpfProgCondNoContainersOnNode:
-		cond = metav1.Condition{
-			Type:    string(BpfProgCondNoContainersOnNode),
-			Status:  metav1.ConditionTrue,
-			Reason:  "noContainersOnNode",
-			Message: "There are no containers on the node that match the container selector",
-		}
-
-	case BpfProgCondNone:
-		cond = metav1.Condition{
-			Type:    string(BpfProgCondNone),
-			Status:  metav1.ConditionTrue,
-			Reason:  "None",
-			Message: "None of the conditions apply",
+			Reason:  "Unloaded",
+			Message: "The application has been successfully unloaded",
 		}
 	}
-
 	return cond
 }
+
+type AppLoadStatus string
+
+const (
+	// The initial load condition
+	AppLoadNotLoaded AppLoadStatus = "NotLoaded"
+	// All programs for app have been loaded
+	AppLoadSuccess AppLoadStatus = "LoadSuccess"
+	// One or more programs for app has not been loaded
+	AppLoadError AppLoadStatus = "LoadError"
+	// All programs for app have been unloaded
+	AppUnLoadSuccess AppLoadStatus = "UnloadSuccess"
+	// One or more programs for app has not been unloaded
+	AppUnloadError AppLoadStatus = "UnloadError"
+	// The app is not selected to run on the node
+	NotSelected AppLoadStatus = "NotSelected"
+	// The program list has changed which is not allowed
+	ProgListChangedError AppLoadStatus = "ProgramListChangedError"
+)
+
+type ProgramLinkStatus string
+
+const (
+	// The initial program attach state
+	ProgAttachPending ProgramLinkStatus = "Pending"
+	// All attachments for program are in the correct state
+	ProgAttachSuccess ProgramLinkStatus = "Success"
+	// One or more attachments for program are not in the correct state
+	ProgAttachError ProgramLinkStatus = "Error"
+	// There was an error updating the attach info
+	UpdateAttachInfoError ProgramLinkStatus = "UpdateAttachInfoError"
+)
+
+type LinkStatus string
+
+const (
+	// Attach point is attached
+	ApAttachAttached LinkStatus = "Attached"
+	// Attach point is not attached
+	ApAttachNotAttached LinkStatus = "NotAttached"
+	// An attach was attempted, but there was an error
+	ApAttachError LinkStatus = "AttachError"
+	// A detach was attempted, but there was an error
+	ApDetachError LinkStatus = "DetachError"
+)
