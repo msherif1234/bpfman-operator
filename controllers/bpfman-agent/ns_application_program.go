@@ -477,6 +477,7 @@ func (r *NsBpfApplicationReconciler) getBpfAppState(ctx context.Context) (*bpfma
 	appProgramList := &bpfmaniov1alpha1.BpfApplicationStateList{}
 
 	opts := []client.ListOption{
+		client.InNamespace(r.currentApp.Namespace),
 		client.MatchingLabels{
 			internal.BpfAppStateOwner: r.currentApp.GetName(),
 			internal.K8sHostLabel:     r.NodeName,

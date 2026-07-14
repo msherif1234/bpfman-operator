@@ -28,6 +28,7 @@ import (
 	testutils "github.com/bpfman/bpfman-operator/internal/test-utils"
 	"github.com/bpfman/bpfman-operator/pkg/helpers"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -72,6 +73,76 @@ func TestNsBpfApplicationReconcilerGetBpfAppState(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "test-app-state", result.Name)
+}
+
+func TestNsBpfApplicationReconcilerGetBpfAppStateIgnoresOtherNamespaces(t *testing.T) {
+	otherNamespaceAppState := &bpfmaniov1alpha1.BpfApplicationState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-app-state",
+			Namespace: "test1",
+			Labels: map[string]string{
+				internal.BpfAppStateOwner: "test-app",
+				internal.K8sHostLabel:     "test-node",
+			},
+		},
+	}
+	objs := []runtime.Object{otherNamespaceAppState}
+
+	bpfApp := &bpfmaniov1alpha1.BpfApplication{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-app",
+			Namespace: "test2",
+		},
+	}
+	fakeNode := testutils.NewNode("test-node")
+	r := createFakeNamespaceReconciler(objs, bpfApp, fakeNode, nil)
+	r.currentApp = bpfApp
+
+	result, err := r.getBpfAppState(context.Background())
+	require.NoError(t, err)
+	require.Nil(t, result)
+}
+
+func TestNsBpfApplicationReconcilerGetBpfAppStateSelectsOwnNamespace(t *testing.T) {
+	// State objects for same-named applications on the same node are
+	// label-identical, so only the namespace can tell them apart.
+	ownAppState := &bpfmaniov1alpha1.BpfApplicationState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-app-state-own",
+			Namespace: "test2",
+			Labels: map[string]string{
+				internal.BpfAppStateOwner: "test-app",
+				internal.K8sHostLabel:     "test-node",
+			},
+		},
+	}
+	otherNamespaceAppState := &bpfmaniov1alpha1.BpfApplicationState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-app-state-other",
+			Namespace: "test1",
+			Labels: map[string]string{
+				internal.BpfAppStateOwner: "test-app",
+				internal.K8sHostLabel:     "test-node",
+			},
+		},
+	}
+	objs := []runtime.Object{ownAppState, otherNamespaceAppState}
+
+	bpfApp := &bpfmaniov1alpha1.BpfApplication{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-app",
+			Namespace: "test2",
+		},
+	}
+	fakeNode := testutils.NewNode("test-node")
+	r := createFakeNamespaceReconciler(objs, bpfApp, fakeNode, nil)
+	r.currentApp = bpfApp
+
+	result, err := r.getBpfAppState(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "test-app-state-own", result.Name)
+	require.Equal(t, "test2", result.Namespace)
 }
 
 func TestNsBpfApplicationControllerCreate(t *testing.T) {
@@ -406,6 +477,133 @@ func TestNsBpfApplicationControllerCreate(t *testing.T) {
 		verifyBpfApplicationState(t, bpfAppState3, fakeNode, testAppProgramName, bpfmaniov1alpha1.BpfAppStateCondSuccess)
 		// Check that the bpfAppState was not updated.
 		require.True(t, reflect.DeepEqual(bpfAppState2, bpfAppState3))
+	}
+}
+
+// TestNsBpfApplicationControllerSameNameDifferentNamespaces checks that
+// two BpfApplications with the same name in different namespaces, with
+// different program lists, each get their own BpfApplicationState and
+// reconcile to Success independently.
+//
+// See https://redhat.atlassian.net/browse/BPFMAN-45.
+func TestNsBpfApplicationControllerSameNameDifferentNamespaces(t *testing.T) {
+	var (
+		fakePid           = int32(1000)
+		fakeNode          = testutils.NewNode("fake-control-plane")
+		interfaceSelector = bpfmaniov1alpha1.InterfaceSelector{
+			Interfaces: []string{fakeInt0},
+		}
+		fakeNetNamespaces = bpfmaniov1alpha1.NetworkNamespaceSelector{
+			Pods: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "test",
+				},
+			},
+		}
+		tcProceedOn = []bpfmaniov1alpha1.TcProceedOnValue{bpfmaniov1alpha1.TcProceedOnValue("ok"),
+			bpfmaniov1alpha1.TcProceedOnValue("shot")}
+		ctx = context.TODO()
+	)
+
+	// Set development Logger, so we can see all logs in tests.
+	logf.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
+
+	tcProgram := bpfmaniov1alpha1.BpfApplicationProgram{
+		Name: testTcBpfFunctionName,
+		Type: bpfmaniov1alpha1.ProgTypeTC,
+		TC: &bpfmaniov1alpha1.TcProgramInfo{
+			Links: []bpfmaniov1alpha1.TcAttachInfo{
+				{
+					InterfaceSelector: interfaceSelector,
+					Direction:         testDirectionIngress,
+					Priority:          ptr.To(int32(testPriority)),
+					NetworkNamespaces: fakeNetNamespaces,
+					ProceedOn:         tcProceedOn,
+				},
+			},
+		},
+	}
+	tcxProgram := bpfmaniov1alpha1.BpfApplicationProgram{
+		Name: testTcxBpfFunctionName,
+		Type: bpfmaniov1alpha1.ProgTypeTCX,
+		TCX: &bpfmaniov1alpha1.TcxProgramInfo{
+			Links: []bpfmaniov1alpha1.TcxAttachInfo{
+				{
+					InterfaceSelector: interfaceSelector,
+					NetworkNamespaces: fakeNetNamespaces,
+					Direction:         testDirectionIngress,
+					Priority:          ptr.To(int32(testPriority)),
+				},
+			},
+		},
+	}
+
+	newApp := func(namespace string, programs []bpfmaniov1alpha1.BpfApplicationProgram) *bpfmaniov1alpha1.BpfApplication {
+		return &bpfmaniov1alpha1.BpfApplication{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testAppProgramName,
+				Namespace: namespace,
+			},
+			Spec: bpfmaniov1alpha1.BpfApplicationSpec{
+				BpfAppCommon: bpfmaniov1alpha1.BpfAppCommon{
+					NodeSelector: metav1.LabelSelector{},
+					ByteCode: bpfmaniov1alpha1.ByteCodeSelector{
+						Path: ptr.To(testBytecodePath),
+					},
+				},
+				Programs: programs,
+			},
+		}
+	}
+
+	appTest1 := newApp("test1", []bpfmaniov1alpha1.BpfApplicationProgram{tcProgram, tcxProgram})
+	appTest2 := newApp("test2", []bpfmaniov1alpha1.BpfApplicationProgram{tcProgram})
+
+	testContainers := FakeContainerGetter{
+		containerList: &[]ContainerInfo{
+			{
+				podName:       fakePodName,
+				containerName: fakeContainerName,
+				pid:           fakePid,
+			},
+		},
+	}
+
+	objs := []runtime.Object{fakeNode, appTest1, appTest2}
+	r := createFakeNamespaceReconciler(objs, appTest1, fakeNode, &testContainers)
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      testAppProgramName,
+			Namespace: "test1",
+		},
+	}
+
+	// Each reconcile pass returns as soon as one BpfApplicationState
+	// changes, so several passes are needed for both applications to
+	// converge: create each state object, then load and attach each
+	// application's programs.
+	for range 6 {
+		runReconciler(t, ctx, r, req, r.Logger)
+	}
+
+	for _, app := range []*bpfmaniov1alpha1.BpfApplication{appTest1, appTest2} {
+		stateList := &bpfmaniov1alpha1.BpfApplicationStateList{}
+		require.NoError(t, r.List(ctx, stateList, client.InNamespace(app.Namespace)))
+		require.Len(t, stateList.Items, 1,
+			"expected exactly one BpfApplicationState in namespace %s", app.Namespace)
+		bpfAppState := &stateList.Items[0]
+		verifyBpfApplicationState(t, bpfAppState, fakeNode, testAppProgramName, bpfmaniov1alpha1.BpfAppStateCondSuccess)
+		verifyNamespaceBpfProgramState(t, bpfAppState, app.Spec.Programs)
+
+		// getBpfAppState must select the state object from the
+		// application's own namespace even though the state object in
+		// the other namespace carries identical labels.
+		r.currentApp = app
+		found, err := r.getBpfAppState(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, found)
+		require.Equal(t, app.Namespace, found.Namespace)
 	}
 }
 
